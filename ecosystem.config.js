@@ -1,0 +1,35 @@
+module.exports = {
+  apps: [
+    {
+      name: 'pos-server',
+      script: './server/dist/index.js',
+      cwd: './',
+      instances: 1,
+      exec_mode: 'fork',
+      autorestart: true,
+      watch: false,
+      max_memory_restart: '500M',
+      env_production: {
+        NODE_ENV: 'production',
+        PORT: 3001,
+        HOST: '0.0.0.0',
+        DB_PATH: './server/data/restaurant.db',
+        BACKUP_DIR: './server/backups',
+        JWT_SECRET: 'change-this-to-a-secure-random-string-in-production',
+        FRONTEND_URL: 'http://localhost:5173',
+      },
+      env_development: {
+        NODE_ENV: 'development',
+        PORT: 3001,
+        HOST: '0.0.0.0',
+        DB_PATH: './server/data/restaurant.db',
+        BACKUP_DIR: './server/backups',
+        JWT_SECRET: 'dev-secret-key',
+        FRONTEND_URL: 'http://localhost:5173',
+      },
+      error_file: './logs/error.log',
+      out_file: './logs/output.log',
+      log_date_format: 'YYYY-MM-DD HH:mm:ss',
+    },
+  ],
+};

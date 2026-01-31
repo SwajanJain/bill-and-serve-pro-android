@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Bill &amp; Serve Pro</string>
+    <string name="title_activity_main">Bill &amp; Serve Pro</string>
+    <string name="package_name">com.billandserve.pos</string>
+    <string name="custom_url_scheme">com.billandserve.pos</string>
+</resources>

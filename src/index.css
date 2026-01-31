@@ -1,0 +1,266 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Restaurant POS Design System - Dark Theme for Restaurant Environment */
+
+@layer base {
+  :root {
+    /* Dark theme as default for POS systems */
+    --background: 222 47% 6%;
+    --foreground: 210 40% 96%;
+
+    --card: 222 47% 8%;
+    --card-foreground: 210 40% 96%;
+
+    --popover: 222 47% 10%;
+    --popover-foreground: 210 40% 96%;
+
+    --primary: 142 70% 45%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 217 33% 17%;
+    --secondary-foreground: 210 40% 96%;
+
+    --muted: 217 33% 14%;
+    --muted-foreground: 215 20% 55%;
+
+    --accent: 38 92% 50%;
+    --accent-foreground: 0 0% 0%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 217 33% 20%;
+    --input: 217 33% 17%;
+    --ring: 142 70% 45%;
+
+    --radius: 0.5rem;
+
+    /* POS-specific colors */
+    --success: 142 70% 45%;
+    --success-foreground: 0 0% 100%;
+    
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 0%;
+    
+    --info: 199 89% 48%;
+    --info-foreground: 0 0% 100%;
+    
+    /* Status colors for orders/KOT */
+    --status-new: 199 89% 48%;
+    --status-preparing: 38 92% 50%;
+    --status-ready: 142 70% 45%;
+    --status-urgent: 0 84% 60%;
+    
+    /* Veg/Non-veg indicators */
+    --veg: 142 70% 45%;
+    --non-veg: 0 84% 50%;
+
+    --sidebar-background: 222 47% 8%;
+    --sidebar-foreground: 210 40% 96%;
+    --sidebar-primary: 142 70% 45%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 217 33% 17%;
+    --sidebar-accent-foreground: 210 40% 96%;
+    --sidebar-border: 217 33% 20%;
+    --sidebar-ring: 142 70% 45%;
+  }
+
+  .light {
+    --background: 0 0% 98%;
+    --foreground: 222 47% 11%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+
+    --primary: 142 70% 40%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 210 40% 96%;
+    --secondary-foreground: 222 47% 11%;
+
+    --muted: 210 40% 96%;
+    --muted-foreground: 215 16% 47%;
+
+    --accent: 38 92% 50%;
+    --accent-foreground: 0 0% 0%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 214 32% 91%;
+    --input: 214 32% 91%;
+    --ring: 142 70% 40%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    /* Support for notched phones */
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    /* Prevent pull-to-refresh on mobile */
+    overscroll-behavior: none;
+    /* Prevent text selection on touch */
+    -webkit-user-select: none;
+    user-select: none;
+    /* Better touch handling */
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* Allow text selection in inputs and textareas */
+  input, textarea {
+    -webkit-user-select: text;
+    user-select: text;
+  }
+}
+
+@layer components {
+  /* POS Button styles */
+  .btn-pos {
+    @apply inline-flex items-center justify-center rounded-lg font-medium transition-all;
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring;
+    @apply active:scale-[0.98];
+  }
+
+  /* Menu item card */
+  .menu-item-card {
+    @apply bg-card border border-border rounded-lg p-3 cursor-pointer;
+    @apply hover:border-primary/50 hover:bg-card/80 transition-all;
+    @apply active:scale-[0.98];
+  }
+
+  /* Table card */
+  .table-card {
+    @apply bg-card border-2 border-border rounded-xl p-4 cursor-pointer;
+    @apply flex flex-col items-center justify-center min-h-[100px];
+    @apply hover:border-primary/50 transition-all;
+  }
+
+  .table-card.occupied {
+    @apply border-warning bg-warning/10;
+  }
+
+  .table-card.available {
+    @apply border-success/30 hover:border-success;
+  }
+
+  /* KOT ticket */
+  .kot-ticket {
+    @apply bg-card border border-border rounded-lg overflow-hidden;
+  }
+
+  .kot-ticket.status-new {
+    @apply border-l-4 border-l-[hsl(var(--status-new))];
+  }
+
+  .kot-ticket.status-preparing {
+    @apply border-l-4 border-l-[hsl(var(--status-preparing))];
+  }
+
+  .kot-ticket.status-ready {
+    @apply border-l-4 border-l-[hsl(var(--status-ready))];
+  }
+
+  /* Status badges */
+  .status-badge {
+    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
+  }
+
+  .status-badge.new {
+    @apply bg-[hsl(var(--status-new)/0.2)] text-[hsl(var(--status-new))];
+  }
+
+  .status-badge.preparing {
+    @apply bg-[hsl(var(--status-preparing)/0.2)] text-[hsl(var(--status-preparing))];
+  }
+
+  .status-badge.ready {
+    @apply bg-[hsl(var(--status-ready)/0.2)] text-[hsl(var(--status-ready))];
+  }
+
+  /* Veg/Non-veg indicator */
+  .veg-indicator {
+    @apply w-4 h-4 border-2 rounded-sm flex items-center justify-center;
+  }
+
+  .veg-indicator.veg {
+    @apply border-[hsl(var(--veg))];
+  }
+
+  .veg-indicator.veg::after {
+    content: '';
+    @apply w-2 h-2 rounded-full bg-[hsl(var(--veg))];
+  }
+
+  .veg-indicator.non-veg {
+    @apply border-[hsl(var(--non-veg))];
+  }
+
+  .veg-indicator.non-veg::after {
+    content: '';
+    @apply w-0 h-0 border-l-[4px] border-r-[4px] border-b-[8px];
+    border-left-color: transparent;
+    border-right-color: transparent;
+    border-bottom-color: hsl(var(--non-veg));
+  }
+}
+
+@layer utilities {
+  /* Currency formatting */
+  .currency::before {
+    content: '₹';
+  }
+
+  /* Quick animations */
+  .animate-pulse-slow {
+    animation: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+
+  /* Hide scrollbar but allow scrolling */
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* Safe area support for notched phones */
+  .safe-area-bottom {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  .safe-area-top {
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+
+  /* Touch-friendly tap targets */
+  .touch-target {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
+
+/* Mobile-specific dialog styles */
+@media (max-width: 640px) {
+  [role="dialog"] {
+    max-width: 100vw !important;
+    max-height: 90vh !important;
+    margin: 0;
+    border-radius: 16px 16px 0 0;
+  }
+}
