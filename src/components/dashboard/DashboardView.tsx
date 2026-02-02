@@ -48,9 +48,9 @@ export function DashboardView() {
   ];
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-3 sm:p-6 space-y-6">
       <div>
-        <h1 className="text-2xl font-bold">{L.todaysSummary}</h1>
+        <h1 className="text-xl sm:text-2xl font-bold">{L.todaysSummary}</h1>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -60,7 +60,7 @@ export function DashboardView() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-muted-foreground">{stat.title}</p>
-                  <p className="text-2xl font-bold mt-1">{stat.value}</p>
+                  <p className="text-xl sm:text-2xl font-bold mt-1">{stat.value}</p>
                 </div>
                 <div className={`p-3 rounded-lg ${stat.bgColor}`}>
                   <stat.icon className={`h-6 w-6 ${stat.color}`} />

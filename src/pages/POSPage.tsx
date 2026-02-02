@@ -12,6 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { useBackHandler } from '@/hooks/use-back-handler';
 
 type MobileView = 'menu' | 'cart';
 
@@ -20,6 +21,10 @@ export default function POSPage() {
   const [showTableSelector, setShowTableSelector] = useState(false);
   const [mobileView, setMobileView] = useState<MobileView>('menu');
   const [orderType, setOrderType] = useState<'dine-in' | 'takeaway'>('takeaway');
+
+  // Back button handlers
+  useBackHandler('pos-table-selector', showTableSelector, () => setShowTableSelector(false), 90);
+  useBackHandler('pos-mobile-cart', mobileView === 'cart', () => setMobileView('menu'), 50);
 
   const handleStartOrder = () => {
     if (orderType === 'dine-in') {
@@ -88,7 +93,7 @@ export default function POSPage() {
   }
 
   return (
-    <div className="h-screen flex flex-col md:flex-row">
+    <div className="h-full flex flex-col md:flex-row">
       {/* Desktop Layout */}
       <div className="hidden md:flex flex-1 h-full">
         <div className="flex-1 overflow-hidden">
@@ -165,10 +170,11 @@ export default function POSPage() {
       {mobileView === 'menu' && cartItemCount > 0 && (
         <button
           onClick={() => setMobileView('cart')}
-          className="md:hidden fixed bottom-20 left-3 right-3 bg-primary text-primary-foreground rounded-xl px-4 py-3.5 shadow-lg flex items-center justify-between z-50 animate-in slide-in-from-bottom-4"
+          className="md:hidden fixed left-3 right-3 bg-primary text-primary-foreground rounded-xl px-4 py-3.5 shadow-lg flex items-center justify-between z-50 animate-in slide-in-from-bottom-4"
+          style={{ bottom: 'calc(4rem + env(safe-area-inset-bottom, 0px) + 0.75rem)' }}
         >
           <span className="font-semibold">
-            {cartItemCount} {L.items} | \u20B9{currentOrder.grandTotal.toFixed(0)}
+            {cartItemCount} {L.items} | ₹{currentOrder.grandTotal.toFixed(0)}
           </span>
           <span className="font-semibold">{L.viewCart} &gt;</span>
         </button>

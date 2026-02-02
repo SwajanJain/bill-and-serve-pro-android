@@ -111,6 +111,7 @@ export interface RestaurantSettings {
   name: string;
   phone: string;
   address: string;
+  logo?: string;
   gstEnabled: boolean;
   gstin: string;
   defaultTaxRate: number;

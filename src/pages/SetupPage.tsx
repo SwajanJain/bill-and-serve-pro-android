@@ -294,8 +294,8 @@ export default function SetupPage() {
                     {areas.map(area => (
                       <div key={area.id} className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm cursor-pointer ${selectedAreaId === area.id ? 'bg-primary text-primary-foreground' : 'bg-secondary'}`} onClick={() => setSelectedAreaId(area.id)}>
                         {area.name}
-                        <button onClick={e => { e.stopPropagation(); handleRemoveArea(area.id); }} className="ml-1 opacity-60 hover:opacity-100">
-                          <Trash2 className="h-3 w-3" />
+                        <button onClick={e => { e.stopPropagation(); handleRemoveArea(area.id); }} className="ml-1 p-1.5 opacity-60 hover:opacity-100 rounded">
+                          <Trash2 className="h-4 w-4" />
                         </button>
                       </div>
                     ))}
@@ -314,8 +314,8 @@ export default function SetupPage() {
                     {tables.filter(t => t.areaId === selectedAreaId).map(table => (
                       <div key={table.id} className="flex items-center gap-1 px-3 py-1.5 bg-secondary rounded-lg text-sm">
                         {table.name}
-                        <button onClick={() => handleRemoveTable(table.id)} className="ml-1 opacity-60 hover:opacity-100">
-                          <Trash2 className="h-3 w-3" />
+                        <button onClick={() => handleRemoveTable(table.id)} className="ml-1 p-1.5 opacity-60 hover:opacity-100 rounded">
+                          <Trash2 className="h-4 w-4" />
                         </button>
                       </div>
                     ))}
@@ -349,8 +349,8 @@ export default function SetupPage() {
                     {categories.map(cat => (
                       <div key={cat.id} className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm cursor-pointer ${selectedCategoryId === cat.id ? 'bg-primary text-primary-foreground' : 'bg-secondary'}`} onClick={() => setSelectedCategoryId(cat.id)}>
                         {cat.name}
-                        <button onClick={e => { e.stopPropagation(); handleRemoveCategory(cat.id); }} className="ml-1 opacity-60 hover:opacity-100">
-                          <Trash2 className="h-3 w-3" />
+                        <button onClick={e => { e.stopPropagation(); handleRemoveCategory(cat.id); }} className="ml-1 p-1.5 opacity-60 hover:opacity-100 rounded">
+                          <Trash2 className="h-4 w-4" />
                         </button>
                       </div>
                     ))}
@@ -361,13 +361,15 @@ export default function SetupPage() {
               {selectedCategoryId && (
                 <div className="space-y-2">
                   <Label>Add Item to "{categories.find(c => c.id === selectedCategoryId)?.name}"</Label>
-                  <div className="flex gap-2">
+                  <div className="flex flex-col sm:flex-row gap-2">
                     <Input value={newItemName} onChange={e => setNewItemName(e.target.value)} placeholder="Item name" className="flex-1" />
-                    <Input type="number" value={newItemPrice} onChange={e => setNewItemPrice(e.target.value)} placeholder="Price" className="w-24" inputMode="numeric" />
-                    <Button variant="outline" size="icon" onClick={() => setNewItemIsVeg(!newItemIsVeg)} title={newItemIsVeg ? 'Veg' : 'Non-Veg'}>
-                      <div className={`w-4 h-4 border-2 rounded ${newItemIsVeg ? 'border-green-600 bg-green-600' : 'border-red-600 bg-red-600'}`} />
-                    </Button>
-                    <Button onClick={handleAddItem} disabled={!newItemName.trim() || !newItemPrice}><Plus className="h-4 w-4" /></Button>
+                    <div className="flex gap-2">
+                      <Input type="number" value={newItemPrice} onChange={e => setNewItemPrice(e.target.value)} placeholder="Price" className="w-24" inputMode="numeric" />
+                      <Button variant="outline" size="icon" onClick={() => setNewItemIsVeg(!newItemIsVeg)} title={newItemIsVeg ? 'Veg' : 'Non-Veg'}>
+                        <div className={`w-4 h-4 border-2 rounded ${newItemIsVeg ? 'border-green-600 bg-green-600' : 'border-red-600 bg-red-600'}`} />
+                      </Button>
+                      <Button onClick={handleAddItem} disabled={!newItemName.trim() || !newItemPrice}><Plus className="h-4 w-4" /></Button>
+                    </div>
                   </div>
                   <div className="space-y-1 mt-2">
                     {menuItems.filter(i => i.categoryId === selectedCategoryId).map(item => (
@@ -378,8 +380,8 @@ export default function SetupPage() {
                         </div>
                         <div className="flex items-center gap-2">
                           <span className="font-medium">{'\u20B9'}{item.basePrice}</span>
-                          <button onClick={() => handleRemoveItem(item.id)} className="opacity-60 hover:opacity-100">
-                            <Trash2 className="h-3 w-3" />
+                          <button onClick={() => handleRemoveItem(item.id)} className="p-1.5 opacity-60 hover:opacity-100 rounded">
+                            <Trash2 className="h-4 w-4" />
                           </button>
                         </div>
                       </div>

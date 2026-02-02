@@ -6,7 +6,7 @@ export function AppLayout() {
   return (
     <div className="flex flex-col h-screen overflow-hidden">
       {/* Main content area - with padding for bottom nav */}
-      <main className="flex-1 overflow-y-auto pb-16">
+      <main className="flex-1 overflow-y-auto" style={{ paddingBottom: 'calc(4rem + env(safe-area-inset-bottom, 0px))' }}>
         <Outlet />
       </main>
 

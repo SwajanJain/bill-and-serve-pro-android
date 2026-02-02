@@ -76,7 +76,7 @@ export function DiscountDialog({ open, onOpenChange }: DiscountDialogProps) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="max-w-[95vw] sm:max-w-md">
         <DialogHeader>
           <DialogTitle>{L.discount}</DialogTitle>
         </DialogHeader>

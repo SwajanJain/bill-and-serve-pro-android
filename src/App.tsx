@@ -20,6 +20,7 @@ import NotFound from "./pages/NotFound";
 import { Loader2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { L } from "@/lib/labels";
+import { BackButtonProvider } from "@/contexts/BackButtonContext";
 
 function ProtectedRoute({ children, permission }: { children: React.ReactNode; permission?: string }) {
   const { user, isLoading, hasPermission } = useAuth();
@@ -53,19 +54,21 @@ function ProtectedRoute({ children, permission }: { children: React.ReactNode; p
 }
 
 const AppRoutes = () => (
-  <Routes>
-    <Route path="/" element={<Index />} />
-    <Route path="/login" element={<LoginPage />} />
-    <Route path="/setup" element={<SetupPage />} />
-    <Route path="/" element={<ProtectedRoute><SettingsProvider><POSProvider><AppLayout /></POSProvider></SettingsProvider></ProtectedRoute>}>
-      <Route path="dashboard" element={<DashboardPage />} />
-      <Route path="pos" element={<POSPage />} />
-      <Route path="tables" element={<TablesPage />} />
-      <Route path="menu" element={<ProtectedRoute permission="menu.manage"><MenuPage /></ProtectedRoute>} />
-      <Route path="settings" element={<ProtectedRoute permission="settings.manage"><SettingsPage /></ProtectedRoute>} />
-    </Route>
-    <Route path="*" element={<NotFound />} />
-  </Routes>
+  <BackButtonProvider>
+    <Routes>
+      <Route path="/" element={<Index />} />
+      <Route path="/login" element={<LoginPage />} />
+      <Route path="/setup" element={<SetupPage />} />
+      <Route path="/" element={<ProtectedRoute><SettingsProvider><POSProvider><AppLayout /></POSProvider></SettingsProvider></ProtectedRoute>}>
+        <Route path="dashboard" element={<DashboardPage />} />
+        <Route path="pos" element={<POSPage />} />
+        <Route path="tables" element={<TablesPage />} />
+        <Route path="menu" element={<ProtectedRoute permission="menu.manage"><MenuPage /></ProtectedRoute>} />
+        <Route path="settings" element={<ProtectedRoute permission="settings.manage"><SettingsPage /></ProtectedRoute>} />
+      </Route>
+      <Route path="*" element={<NotFound />} />
+    </Routes>
+  </BackButtonProvider>
 );
 
 const App = () => (

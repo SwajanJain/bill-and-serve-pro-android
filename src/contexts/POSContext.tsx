@@ -37,7 +37,7 @@ interface POSContextType {
   addMenuItem: (item: Omit<MenuItem, 'id'>) => void;
   updateMenuItem: (id: string, updates: Partial<MenuItem>) => void;
   deleteMenuItem: (id: string) => void;
-  addCategory: (category: Omit<Category, 'id'>) => void;
+  addCategory: (category: Omit<Category, 'id'> & { id?: string }) => void;
   updateCategory: (id: string, updates: Partial<Category>) => void;
   deleteCategory: (id: string) => void;
 
@@ -512,10 +512,10 @@ export function POSProvider({ children }: { children: React.ReactNode }) {
     setMenuItems(prev => prev.filter(item => item.id !== id));
   }, []);
 
-  const addCategory = useCallback((category: Omit<Category, 'id'>) => {
+  const addCategory = useCallback((category: Omit<Category, 'id'> & { id?: string }) => {
     const newCat: Category = {
       ...category,
-      id: generateId(),
+      id: category.id || generateId(),
     };
     setCategories(prev => [...prev, newCat]);
   }, []);

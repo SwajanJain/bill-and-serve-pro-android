@@ -29,6 +29,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
+import { useBackHandler } from '@/hooks/use-back-handler';
 
 // All nav items — split into primary/more dynamically based on role
 const allNavItems = [
@@ -45,6 +46,10 @@ export function BottomNav() {
   const { user, logout, hasPermission } = useAuth();
   const [showMore, setShowMore] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+
+  // Back button handlers
+  useBackHandler('nav-logout-confirm', showLogoutConfirm, () => setShowLogoutConfirm(false), 100);
+  useBackHandler('nav-more-sheet', showMore, () => setShowMore(false), 80);
 
   const userRole = user?.role || 'cashier';
 

@@ -135,7 +135,7 @@ export function MenuPanel() {
                       <div className={`w-2.5 h-2.5 rounded-full m-auto mt-0.5 ${item.isVeg ? 'bg-green-600' : 'bg-red-600'}`} />
                     </div>
                     <span className="flex-1 text-base font-medium leading-tight truncate">{item.name}</span>
-                    <span className="shrink-0 text-lg font-bold text-primary">\u20B9{item.basePrice}</span>
+                    <span className="shrink-0 text-lg font-bold text-primary">₹{item.basePrice}</span>
                   </div>
 
                   {/* Phase 4.4: Inline quantity controls or Add button */}

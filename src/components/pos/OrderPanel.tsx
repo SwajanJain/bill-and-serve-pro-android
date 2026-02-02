@@ -21,6 +21,7 @@ import {
 } from '@/components/ui/alert-dialog';
 import { Haptics, ImpactStyle } from '@capacitor/haptics';
 import { useToast } from '@/hooks/use-toast';
+import { useBackHandler } from '@/hooks/use-back-handler';
 
 export function OrderPanel() {
   const {
@@ -43,6 +44,14 @@ export function OrderPanel() {
   const [showRemoveConfirm, setShowRemoveConfirm] = useState<string | null>(null);
   const [completedOrder, setCompletedOrder] = useState<Order | null>(null);
   const [customerDetails, setCustomerDetails] = useState<CustomerDetails | null>(null);
+
+  // Back button handlers
+  useBackHandler('order-cancel-confirm', showCancelConfirm, () => setShowCancelConfirm(false), 100);
+  useBackHandler('order-remove-confirm', !!showRemoveConfirm, () => setShowRemoveConfirm(null), 100);
+  useBackHandler('order-invoice', showInvoice, () => handleInvoiceClose(), 90);
+  useBackHandler('order-payment', showPayment, () => setShowPayment(false), 90);
+  useBackHandler('order-discount', showDiscount, () => setShowDiscount(false), 90);
+  useBackHandler('order-customer-details', showCustomerDetails, () => handleCustomerSkip(), 90);
 
   const handleCustomerSubmit = (details: CustomerDetails) => {
     setCustomerDetails(details);
@@ -183,8 +192,8 @@ export function OrderPanel() {
                     )}
                   </div>
                   <div className="text-right shrink-0">
-                    <div className="font-semibold text-base">\u20B9{line.lineTotal}</div>
-                    <div className="text-xs text-muted-foreground">\u20B9{line.unitPrice} x {line.qty}</div>
+                    <div className="font-semibold text-base">₹{line.lineTotal}</div>
+                    <div className="text-xs text-muted-foreground">₹{line.unitPrice} x {line.qty}</div>
                   </div>
                 </div>
 
@@ -231,28 +240,28 @@ export function OrderPanel() {
         <div className="border-t border-border p-4 space-y-2 bg-secondary/30">
           <div className="flex justify-between text-sm">
             <span className="text-muted-foreground">{L.subtotal}</span>
-            <span>\u20B9{currentOrder.subtotal.toFixed(2)}</span>
+            <span>₹{currentOrder.subtotal.toFixed(2)}</span>
           </div>
           {currentOrder.discountValue && currentOrder.discountValue > 0 && (
             <div className="flex justify-between text-sm text-success">
               <span className="flex items-center gap-1">
                 {L.discount}
-                <Button variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-destructive" onClick={removeDiscount}>
-                  <X className="h-3 w-3" />
+                <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive" onClick={removeDiscount}>
+                  <X className="h-4 w-4" />
                 </Button>
               </span>
-              <span>-\u20B9{discountAmount.toFixed(2)}</span>
+              <span>-₹{discountAmount.toFixed(2)}</span>
             </div>
           )}
           {settings.gstEnabled && (
             <div className="flex justify-between text-sm">
               <span className="text-muted-foreground">{L.tax}</span>
-              <span>\u20B9{currentOrder.taxTotal.toFixed(2)}</span>
+              <span>₹{currentOrder.taxTotal.toFixed(2)}</span>
             </div>
           )}
           <div className="flex justify-between text-xl font-bold pt-2 border-t border-border">
             <span>{L.total}</span>
-            <span className="text-primary">\u20B9{currentOrder.grandTotal.toFixed(2)}</span>
+            <span className="text-primary">₹{currentOrder.grandTotal.toFixed(2)}</span>
           </div>
         </div>
       )}

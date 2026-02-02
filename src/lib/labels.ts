@@ -2,7 +2,7 @@
 
 export const L = {
   // App
-  appName: 'Bill & Serve Pro',
+  appName: 'Billit',
 
   // Login
   enterPin: 'Enter your PIN',
@@ -153,4 +153,21 @@ export const L = {
   freeTableConfirm: 'Free this table?',
   freeTableDesc: 'The order on this table will be cancelled.',
   tableFreed: 'Table freed',
+
+  // CSV import
+  importCsv: 'Import CSV',
+  csvImported: 'CSV imported',
+  csvError: 'Invalid CSV format',
+  csvMissingColumns: 'CSV must have name, price, category columns',
+
+  // Back button
+  backExitHint: 'Press back again to exit',
+
+  // PDF & Logo
+  uploadLogo: 'Upload Logo',
+  removeLogo: 'Remove Logo',
+  shareBill: 'Share Bill',
+  savePdf: 'Save PDF',
+  pdfSaved: 'PDF saved',
+  generatingPdf: 'Generating PDF...',
 } as const;

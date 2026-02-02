@@ -11,6 +11,7 @@ import { DeleteConfirmDialog } from '@/components/menu/DeleteConfirmDialog';
 import { useToast } from '@/hooks/use-toast';
 import { Table, Area } from '@/types';
 import { L } from '@/lib/labels';
+import { useBackHandler } from '@/hooks/use-back-handler';
 
 export default function TablesPage() {
   const { areas, tables, addArea, updateArea, deleteArea, addTable, updateTable, deleteTable } = useSettings();
@@ -25,6 +26,12 @@ export default function TablesPage() {
   const [editingArea, setEditingArea] = useState<Area | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<{ type: 'table' | 'area'; id: string; name: string } | null>(null);
   const [freeTableTarget, setFreeTableTarget] = useState<{ tableId: string; name: string } | null>(null);
+
+  // Back button handlers
+  useBackHandler('tables-delete-confirm', deleteDialogOpen, () => setDeleteDialogOpen(false), 100);
+  useBackHandler('tables-free-confirm', !!freeTableTarget, () => setFreeTableTarget(null), 100);
+  useBackHandler('tables-table-dialog', tableDialogOpen, () => setTableDialogOpen(false), 90);
+  useBackHandler('tables-area-dialog', areaDialogOpen, () => setAreaDialogOpen(false), 90);
 
   const handleTableClick = (tableId: string) => {
     selectTable(tableId);
@@ -115,16 +122,14 @@ export default function TablesPage() {
   };
 
   return (
-    <div className="p-6">
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-bold">{L.tables}</h1>
-        </div>
+    <div className="p-3 sm:p-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
+        <h1 className="text-xl sm:text-2xl font-bold">{L.tables}</h1>
         <div className="flex gap-2">
-          <Button variant="outline" className="gap-2" onClick={handleAddArea}>
+          <Button variant="outline" size="sm" className="gap-1.5" onClick={handleAddArea}>
             <Plus className="h-4 w-4" />{L.addArea}
           </Button>
-          <Button className="gap-2" onClick={handleAddTable}>
+          <Button size="sm" className="gap-1.5" onClick={handleAddTable}>
             <Plus className="h-4 w-4" />{L.addTable}
           </Button>
         </div>
@@ -184,17 +189,17 @@ export default function TablesPage() {
                         </button>
 
                         {/* Always visible buttons */}
-                        <div className="absolute top-1 right-1 flex gap-1">
+                        <div className="absolute top-1 right-1 flex gap-0.5">
                           {isOccupied && (
-                            <Button variant="secondary" size="icon" className="h-6 w-6 text-warning" onClick={(e) => handleFreeTable(e, table)} title={L.freeTable}>
-                              <Unlock className="h-3 w-3" />
+                            <Button variant="secondary" size="icon" className="h-8 w-8 text-warning" onClick={(e) => handleFreeTable(e, table)} title={L.freeTable}>
+                              <Unlock className="h-4 w-4" />
                             </Button>
                           )}
-                          <Button variant="secondary" size="icon" className="h-6 w-6" onClick={(e) => handleEditTable(e, table)}>
-                            <Edit2 className="h-3 w-3" />
+                          <Button variant="secondary" size="icon" className="h-8 w-8" onClick={(e) => handleEditTable(e, table)}>
+                            <Edit2 className="h-4 w-4" />
                           </Button>
-                          <Button variant="secondary" size="icon" className="h-6 w-6 text-destructive" onClick={(e) => handleDeleteTable(e, table)}>
-                            <Trash2 className="h-3 w-3" />
+                          <Button variant="secondary" size="icon" className="h-8 w-8 text-destructive" onClick={(e) => handleDeleteTable(e, table)}>
+                            <Trash2 className="h-4 w-4" />
                           </Button>
                         </div>
                       </div>

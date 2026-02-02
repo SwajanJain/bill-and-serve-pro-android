@@ -120,7 +120,7 @@ export function PaymentDialog({ open, onOpenChange, onComplete }: PaymentDialogP
           {/* Total */}
           <div className="text-center p-5 bg-secondary rounded-lg">
             <p className="text-sm text-muted-foreground mb-1">{L.amountDue}</p>
-            <p className="text-4xl font-bold text-primary">\u20B9{total}</p>
+            <p className="text-3xl sm:text-4xl font-bold text-primary">₹{total}</p>
           </div>
 
           {/* Payment Method */}
@@ -158,7 +158,7 @@ export function PaymentDialog({ open, onOpenChange, onComplete }: PaymentDialogP
                 />
               </div>
 
-              <div className="grid grid-cols-5 gap-2">
+              <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
                 {smartAmounts.map((amount, i) => (
                   <Button
                     key={amount}
@@ -166,7 +166,7 @@ export function PaymentDialog({ open, onOpenChange, onComplete }: PaymentDialogP
                     className="h-12 text-sm font-medium"
                     onClick={() => handleQuickAmount(amount)}
                   >
-                    {i === 0 ? L.exact : `\u20B9${amount}`}
+                    {i === 0 ? L.exact : `₹${amount}`}
                   </Button>
                 ))}
               </div>
@@ -174,7 +174,7 @@ export function PaymentDialog({ open, onOpenChange, onComplete }: PaymentDialogP
               {received >= total && received > 0 && (
                 <div className="p-4 bg-success/10 rounded-lg text-center">
                   <p className="text-sm text-muted-foreground">{L.change}</p>
-                  <p className="text-3xl font-bold text-success">\u20B9{change}</p>
+                  <p className="text-3xl font-bold text-success">₹{change}</p>
                 </div>
               )}
             </div>

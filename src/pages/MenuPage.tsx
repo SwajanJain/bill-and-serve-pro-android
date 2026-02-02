@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
-import { Plus, Edit2, Trash2, Search } from 'lucide-react';
+import React, { useState, useRef } from 'react';
+import { Plus, Edit2, Trash2, Search, Upload } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { usePOS } from '@/contexts/POSContext';
+import { useSettings } from '@/contexts/SettingsContext';
 import { Badge } from '@/components/ui/badge';
 import { MenuItemDialog } from '@/components/menu/MenuItemDialog';
 import { CategoryDialog } from '@/components/menu/CategoryDialog';
@@ -11,10 +12,13 @@ import { DeleteConfirmDialog } from '@/components/menu/DeleteConfirmDialog';
 import { useToast } from '@/hooks/use-toast';
 import { MenuItem, Category } from '@/types';
 import { L } from '@/lib/labels';
+import { useBackHandler } from '@/hooks/use-back-handler';
 
 export default function MenuPage() {
   const { menuItems, categories, activeOrders, addMenuItem, updateMenuItem, deleteMenuItem, addCategory, updateCategory, deleteCategory } = usePOS();
+  const { settings } = useSettings();
   const { toast } = useToast();
+  const csvInputRef = useRef<HTMLInputElement>(null);
 
   const [search, setSearch] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
@@ -24,6 +28,11 @@ export default function MenuPage() {
   const [editingItem, setEditingItem] = useState<MenuItem | null>(null);
   const [editingCategory, setEditingCategory] = useState<Category | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<{ type: 'item' | 'category'; id: string; name: string } | null>(null);
+
+  // Back button handlers
+  useBackHandler('menu-delete-confirm', deleteDialogOpen, () => setDeleteDialogOpen(false), 100);
+  useBackHandler('menu-item-dialog', itemDialogOpen, () => setItemDialogOpen(false), 90);
+  useBackHandler('menu-category-dialog', categoryDialogOpen, () => setCategoryDialogOpen(false), 90);
 
   const filteredItems = menuItems.filter(item => {
     const matchesSearch = item.name.toLowerCase().includes(search.toLowerCase());
@@ -83,25 +92,125 @@ export default function MenuPage() {
     setDeleteTarget(null);
   };
 
+  const handleCsvImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const text = event.target?.result as string;
+      if (!text) return;
+
+      const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+      if (lines.length < 2) {
+        toast({ title: L.csvError, variant: 'destructive' });
+        return;
+      }
+
+      const header = lines[0].split(',').map(h => h.trim().toLowerCase());
+      const nameIdx = header.indexOf('name');
+      const priceIdx = header.indexOf('price');
+      const categoryIdx = header.indexOf('category');
+
+      if (nameIdx === -1 || priceIdx === -1 || categoryIdx === -1) {
+        toast({ title: L.csvMissingColumns, variant: 'destructive' });
+        return;
+      }
+
+      // Build category lookup: name (lowercase) -> id (includes existing categories)
+      const categoryMap = new Map<string, string>();
+      for (const cat of categories) {
+        categoryMap.set(cat.name.toLowerCase(), cat.id);
+      }
+
+      let importedCount = 0;
+      let skippedCount = 0;
+      let newCategoryCount = 0;
+
+      for (let i = 1; i < lines.length; i++) {
+        const cols = lines[i].split(',').map(c => c.trim());
+        const name = cols[nameIdx];
+        const price = parseFloat(cols[priceIdx]);
+        const categoryName = cols[categoryIdx];
+
+        if (!name || isNaN(price) || !categoryName) {
+          skippedCount++;
+          continue;
+        }
+
+        // Create category if it doesn't exist yet
+        const catKey = categoryName.toLowerCase();
+        if (!categoryMap.has(catKey)) {
+          const newId = `csv_${Math.random().toString(36).substring(2, 15)}`;
+          addCategory({
+            id: newId,
+            name: categoryName,
+            sortOrder: categories.length + newCategoryCount,
+            isActive: true,
+          });
+          categoryMap.set(catKey, newId);
+          newCategoryCount++;
+        }
+
+        const catId = categoryMap.get(catKey)!;
+        addMenuItem({
+          name,
+          basePrice: price,
+          categoryId: catId,
+          taxRatePercent: settings.defaultTaxRate,
+          isVeg: true,
+          isActive: true,
+        });
+        importedCount++;
+      }
+
+      const parts: string[] = [];
+      if (importedCount > 0) parts.push(`${importedCount} items`);
+      if (newCategoryCount > 0) parts.push(`${newCategoryCount} categories`);
+
+      if (parts.length > 0) {
+        toast({
+          title: `${L.csvImported}: ${parts.join(', ')}`,
+          description: skippedCount > 0 ? `Skipped ${skippedCount} rows` : undefined,
+        });
+      } else {
+        toast({ title: `Skipped ${skippedCount} rows`, variant: 'destructive' });
+      }
+    };
+
+    reader.readAsText(file);
+    e.target.value = '';
+  };
+
   return (
-    <div className="p-6">
-      <div className="flex items-center justify-between mb-6">
+    <div className="p-4 sm:p-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
         <h1 className="text-2xl font-bold">{L.menuManagement}</h1>
-        <div className="flex gap-2">
-          <Button variant="outline" className="gap-2" onClick={handleAddCategory}><Plus className="h-4 w-4" />{L.addCategory}</Button>
-          <Button className="gap-2" onClick={handleAddItem}><Plus className="h-4 w-4" />{L.addItem}</Button>
+        <div className="flex gap-2 flex-wrap">
+          <input
+            ref={csvInputRef}
+            type="file"
+            accept=".csv"
+            className="hidden"
+            onChange={handleCsvImport}
+          />
+          <Button variant="outline" size="sm" className="gap-1.5" onClick={() => csvInputRef.current?.click()}>
+            <Upload className="h-4 w-4" />{L.importCsv}
+          </Button>
+          <Button variant="outline" size="sm" className="gap-1.5" onClick={handleAddCategory}><Plus className="h-4 w-4" />{L.addCategory}</Button>
+          <Button size="sm" className="gap-1.5" onClick={handleAddItem}><Plus className="h-4 w-4" />{L.addItem}</Button>
         </div>
       </div>
 
-      <div className="flex gap-4 mb-6">
-        <div className="relative flex-1 max-w-md">
+      <div className="flex flex-col sm:flex-row gap-3 mb-6">
+        <div className="relative sm:flex-1 sm:max-w-md">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input placeholder={L.searchMenu} value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
         </div>
         <div className="flex gap-2 overflow-x-auto">
-          <Button size="sm" variant={selectedCategory === null ? 'default' : 'outline'} onClick={() => setSelectedCategory(null)}>All</Button>
+          <Button size="sm" className="shrink-0" variant={selectedCategory === null ? 'default' : 'outline'} onClick={() => setSelectedCategory(null)}>All</Button>
           {categories.map(cat => (
-            <Button key={cat.id} size="sm" variant={selectedCategory === cat.id ? 'default' : 'outline'} onClick={() => setSelectedCategory(cat.id)}>
+            <Button key={cat.id} size="sm" className="shrink-0" variant={selectedCategory === cat.id ? 'default' : 'outline'} onClick={() => setSelectedCategory(cat.id)}>
               {cat.name}
             </Button>
           ))}
@@ -140,23 +249,21 @@ export default function MenuPage() {
                   ) : (
                     <div className="divide-y divide-border">
                       {items.map(item => (
-                        <div key={item.id} className="flex items-center justify-between py-3">
-                          <div className="flex items-center gap-3">
+                        <div key={item.id} className="flex items-center justify-between py-3 gap-2">
+                          <div className="flex items-center gap-2 min-w-0 flex-1">
                             <div className={`shrink-0 w-5 h-5 border-2 rounded ${item.isVeg ? 'border-green-600' : 'border-red-600'}`}>
                               <div className={`w-2.5 h-2.5 rounded-full m-auto mt-0.5 ${item.isVeg ? 'bg-green-600' : 'bg-red-600'}`} />
                             </div>
-                            <div>
-                              <p className="font-medium">{item.name}</p>
+                            <div className="min-w-0">
+                              <p className="font-medium truncate">{item.name}</p>
                               <p className="text-sm text-muted-foreground">Tax: {item.taxRatePercent}% GST</p>
                             </div>
                           </div>
-                          <div className="flex items-center gap-4">
-                            <span className="text-lg font-semibold">{'\u20B9'}{item.basePrice}</span>
-                            <Badge variant={item.isActive ? 'default' : 'secondary'}>{item.isActive ? 'Active' : 'Inactive'}</Badge>
-                            <div className="flex gap-1">
-                              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => handleEditItem(item)}><Edit2 className="h-4 w-4" /></Button>
-                              <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={() => handleDeleteItem(item)}><Trash2 className="h-4 w-4" /></Button>
-                            </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span className="text-base font-semibold">₹{item.basePrice}</span>
+                            <Badge variant={item.isActive ? 'default' : 'secondary'} className="hidden sm:inline-flex">{item.isActive ? 'Active' : 'Inactive'}</Badge>
+                            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => handleEditItem(item)}><Edit2 className="h-4 w-4" /></Button>
+                            <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={() => handleDeleteItem(item)}><Trash2 className="h-4 w-4" /></Button>
                           </div>
                         </div>
                       ))}
