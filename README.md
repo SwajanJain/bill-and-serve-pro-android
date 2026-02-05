@@ -1,4 +1,39 @@
-# Welcome to your Lovable project
+# Billit (Restaurant POS)
+
+This repository contains:
+
+- `src/` — Web frontend (also used in Android via Capacitor)
+- `server/` — Fastify backend, SQLite DB, Socket.IO realtime
+
+## Production (Single Restaurant, On-Prem LAN)
+
+Use these guides:
+
+- `docs/INSTALL_ON_PREM.md`
+- `docs/BACKUP_AND_RESTORE.md`
+- `docs/PILOT_RUNBOOK.md`
+- `docs/PILOT_DAILY_LOG.md`
+- `docs/GO_LIVE_CHECKLIST.md`
+
+Quick start:
+
+```sh
+# frontend build
+npm run build
+
+# backend build + run
+cd server
+npm run build
+npm start
+```
+
+Open:
+
+- `http://<server-ip>:3001`
+
+---
+
+# Legacy Lovable template notes
 
 ## Project info
 

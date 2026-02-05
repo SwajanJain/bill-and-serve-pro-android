@@ -27,7 +27,7 @@ const userSchema = z.object({
   email: z.string().email('Valid email is required'),
   phone: z.string().optional(),
   pin: z.string().min(4, 'PIN must be 4 digits').max(4, 'PIN must be 4 digits').regex(/^\d{4}$/, 'PIN must be 4 digits').optional().or(z.literal('')),
-  role: z.enum(['owner', 'manager', 'cashier'] as const),
+  role: z.enum(['owner', 'manager', 'cashier', 'kitchen'] as const),
   isActive: z.boolean(),
 });
 
@@ -44,6 +44,7 @@ const roleLabels: Record<UserRole, string> = {
   owner: 'Owner',
   manager: 'Manager',
   cashier: 'Cashier',
+  kitchen: 'Kitchen',
 };
 
 export function UserDialog({ open, onOpenChange, user, onSave }: UserDialogProps) {

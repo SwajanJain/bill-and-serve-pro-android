@@ -3,6 +3,9 @@ import { Order, OrderLine, OrderType, MenuItem, PaymentMethod, DiscountType, Cat
 import { useAuth } from './AuthContext';
 import { useSettings } from './SettingsContext';
 import { storage } from '@/lib/storage';
+import { APIError, apiRequest, createIdempotencyKey } from '@/lib/api/client';
+import { mapCategory, mapMenuItem, mapOrder } from '@/lib/api/mappers';
+import { enqueueSyncAction, flushSyncQueue } from '@/lib/sync/sync-engine';
 import { mockCategories, mockMenuItems } from '@/data/mockData';
 
 interface POSContextType {
@@ -13,6 +16,7 @@ interface POSContextType {
   completedOrders: Order[];
   dailySummaries: DailySummary[];
   isLoading: boolean;
+  currentOrderReadonlyReason: string | null;
   // Derived table occupancy map: tableId -> orderId
   tableOrderMap: Map<string, string>;
 
@@ -26,6 +30,7 @@ interface POSContextType {
   processPayment: (method: PaymentMethod, amount: number, reference?: string) => void;
   closeOrder: () => void;
   cancelOrder: (reason: string) => void;
+  sendKOT: () => Promise<'sent' | 'queued' | 'no-items' | 'blocked' | 'error'>;
   clearCurrentOrder: () => void;
   loadOrder: (orderId: string) => void;
 
@@ -62,6 +67,7 @@ export function POSProvider({ children }: { children: React.ReactNode }) {
   const [orderCounter, setOrderCounter] = useState(1);
   const [completedOrders, setCompletedOrders] = useState<Order[]>([]);
   const [dailySummaries, setDailySummaries] = useState<DailySummary[]>([]);
+  const [currentOrderReadonlyReason, setCurrentOrderReadonlyReason] = useState<string | null>(null);
 
   // Derive table occupancy from active orders (Phase 1.1)
   const tableOrderMap = useMemo(() => {
@@ -152,6 +158,65 @@ export function POSProvider({ children }: { children: React.ReactNode }) {
     return { todayOrders, updatedSummaries };
   };
 
+  const getReadonlyReasonFromError = (error: unknown): string | null => {
+    if (!(error instanceof APIError)) {
+      return null;
+    }
+    if (error.status !== 409) {
+      return null;
+    }
+
+    const payload = (error.data || {}) as { error?: string; lockOwner?: string };
+    if (payload.error === 'LOCKED' || payload.error === 'Order is locked') {
+      const owner = payload.lockOwner ? ` (${payload.lockOwner})` : '';
+      return `This order is locked by another device${owner}.`;
+    }
+    if (payload.error === 'ORDER_CLOSED') {
+      return 'This order is already closed on another device.';
+    }
+    return payload.error || 'This order cannot be edited right now.';
+  };
+
+  const shouldQueueAfterError = (error: unknown): boolean => {
+    if (!(error instanceof APIError)) {
+      return true;
+    }
+    // Don't queue business/auth errors; queue only transient/server/network failures.
+    return error.status >= 500;
+  };
+
+  const loadRemotePOSData = useCallback(async () => {
+    if (!user) {
+      return;
+    }
+
+    try {
+      const [remoteCategories, remoteMenuItems, remoteOrders] = await Promise.all([
+        apiRequest<Record<string, unknown>[]>('/api/categories'),
+        apiRequest<Record<string, unknown>[]>('/api/menu-items?active=true'),
+        apiRequest<Record<string, unknown>[]>('/api/orders/active'),
+      ]);
+
+      const mappedCategories = remoteCategories.map(mapCategory);
+      const mappedMenuItems = remoteMenuItems.map(mapMenuItem);
+      const mappedOrders = remoteOrders.map((order) => mapOrder(order, mappedMenuItems, tables));
+
+      setCategories(mappedCategories.length > 0 ? mappedCategories : initialCategories);
+      setMenuItems(mappedMenuItems.length > 0 ? mappedMenuItems : initialMenuItems);
+      setActiveOrders(mappedOrders);
+      setCurrentOrderReadonlyReason(null);
+      setCurrentOrder((previousCurrent) => {
+        if (!previousCurrent) return null;
+        const refreshedCurrent = mappedOrders.find((order) => order.id === previousCurrent.id);
+        if (refreshedCurrent) return refreshedCurrent;
+        if (previousCurrent.status === 'paid' || previousCurrent.status === 'cancelled') return null;
+        return previousCurrent;
+      });
+    } catch (error) {
+      // Keep local state as fallback when API is unavailable
+    }
+  }, [user, tables]);
+
   // Load data from storage on mount
   useEffect(() => {
     const loadStoredData = async () => {
@@ -207,6 +272,29 @@ export function POSProvider({ children }: { children: React.ReactNode }) {
 
     loadStoredData();
   }, []);
+
+  useEffect(() => {
+    if (isLoading) {
+      return;
+    }
+
+    flushSyncQueue()
+      .then(loadRemotePOSData)
+      .catch(() => {
+        loadRemotePOSData();
+      });
+  }, [isLoading, loadRemotePOSData]);
+
+  useEffect(() => {
+    const handleOnline = () => {
+      flushSyncQueue()
+        .then(loadRemotePOSData)
+        .catch(() => {});
+    };
+
+    window.addEventListener('online', handleOnline);
+    return () => window.removeEventListener('online', handleOnline);
+  }, [loadRemotePOSData]);
 
   // Persist effects
   useEffect(() => {
@@ -307,21 +395,75 @@ export function POSProvider({ children }: { children: React.ReactNode }) {
       createdAt: new Date(),
     };
 
+    setCurrentOrderReadonlyReason(null);
     setCurrentOrder(newOrder);
     setActiveOrders(prev => [...prev, newOrder]);
-  }, [tables, user, orderCounter]);
+
+    (async () => {
+      try {
+        if (!navigator.onLine) {
+          await enqueueSyncAction('ORDER_CREATE', {
+            orderId: newOrder.id,
+            orderType: type,
+            tableId: tableId || null,
+          });
+          return;
+        }
+
+        const remoteOrder = await apiRequest<Record<string, unknown>>('/api/orders', {
+          method: 'POST',
+          idempotencyKey: createIdempotencyKey('order-create'),
+          body: JSON.stringify({ orderType: type, tableId, clientOrderId: newOrder.id }),
+        });
+        const mappedOrder = mapOrder(remoteOrder, menuItems, tables);
+        setCurrentOrder(mappedOrder);
+        setActiveOrders(prev => [...prev.filter(order => order.id !== newOrder.id), mappedOrder]);
+        setCurrentOrderReadonlyReason(null);
+      } catch (error) {
+        const readonlyReason = getReadonlyReasonFromError(error);
+        if (readonlyReason) {
+          setCurrentOrderReadonlyReason(readonlyReason);
+          return;
+        }
+        if (!shouldQueueAfterError(error)) {
+          return;
+        }
+        await enqueueSyncAction('ORDER_CREATE', {
+          orderId: newOrder.id,
+          orderType: type,
+          tableId: tableId || null,
+        });
+      }
+    })();
+  }, [tables, user, orderCounter, menuItems]);
 
   const loadOrder = useCallback((orderId: string) => {
     const order = activeOrders.find(o => o.id === orderId);
     if (order) {
+      setCurrentOrderReadonlyReason(null);
       setCurrentOrder(order);
+      return;
     }
-  }, [activeOrders]);
+
+    apiRequest<Record<string, unknown>>(`/api/orders/${orderId}`)
+      .then((remoteOrder) => {
+        const mappedOrder = mapOrder(remoteOrder, menuItems, tables);
+        setCurrentOrderReadonlyReason(null);
+        setCurrentOrder(mappedOrder);
+        setActiveOrders(prev => {
+          const withoutCurrent = prev.filter(entry => entry.id !== mappedOrder.id);
+          return [...withoutCurrent, mappedOrder];
+        });
+      })
+      .catch(() => {
+        setCurrentOrderReadonlyReason(null);
+      });
+  }, [activeOrders, menuItems, tables]);
 
   // Phase 1.2: Freeze taxRatePercent at order time
   // Fix: Increment existing line qty for same item instead of creating duplicates
   const addItemToOrder = useCallback((item: MenuItem, qty = 1, notes?: string) => {
-    if (!currentOrder) return;
+    if (!currentOrder || currentOrderReadonlyReason) return;
 
     let updatedLines: OrderLine[];
     const existingLine = !notes ? currentOrder.lines.find(l => l.menuItemId === item.id && !l.notes) : undefined;
@@ -355,11 +497,81 @@ export function POSProvider({ children }: { children: React.ReactNode }) {
 
     setCurrentOrder(updatedOrder);
     setActiveOrders(prev => prev.map(o => o.id === updatedOrder.id ? updatedOrder : o));
-  }, [currentOrder, calculateOrderTotals]);
+
+    (async () => {
+      const existingLineAfterUpdate = updatedLines.find((line) => line.menuItemId === item.id && (!notes ? !line.notes : line.notes === notes));
+      try {
+        if (!navigator.onLine) {
+          if (existingLine && existingLineAfterUpdate) {
+            await enqueueSyncAction('ORDER_LINE_UPDATE', {
+              orderId: currentOrder.id,
+              lineId: existingLine.id,
+              qty: existingLineAfterUpdate.qty,
+              notes: existingLineAfterUpdate.notes || null,
+            }, currentOrder.version);
+          } else {
+            await enqueueSyncAction('ORDER_LINE_ADD', {
+              orderId: currentOrder.id,
+              menuItemId: item.id,
+              qty,
+              notes: notes || null,
+            }, currentOrder.version);
+          }
+          return;
+        }
+
+        if (existingLine && existingLineAfterUpdate) {
+          await apiRequest(`/api/orders/${currentOrder.id}/lines/${existingLine.id}`, {
+            method: 'PATCH',
+            idempotencyKey: createIdempotencyKey('line-update'),
+            body: JSON.stringify({
+              qty: existingLineAfterUpdate.qty,
+              notes: existingLineAfterUpdate.notes || null,
+            }),
+          });
+        } else {
+          await apiRequest(`/api/orders/${currentOrder.id}/lines`, {
+            method: 'POST',
+            idempotencyKey: createIdempotencyKey('line-add'),
+            body: JSON.stringify({
+              menuItemId: item.id,
+              qty,
+              notes: notes || null,
+            }),
+          });
+        }
+        await loadRemotePOSData();
+      } catch (error) {
+        const readonlyReason = getReadonlyReasonFromError(error);
+        if (readonlyReason) {
+          setCurrentOrderReadonlyReason(readonlyReason);
+          return;
+        }
+        if (!shouldQueueAfterError(error)) {
+          return;
+        }
+        if (existingLine && existingLineAfterUpdate) {
+          await enqueueSyncAction('ORDER_LINE_UPDATE', {
+            orderId: currentOrder.id,
+            lineId: existingLine.id,
+            qty: existingLineAfterUpdate.qty,
+            notes: existingLineAfterUpdate.notes || null,
+          }, currentOrder.version);
+        } else {
+          await enqueueSyncAction('ORDER_LINE_ADD', {
+            orderId: currentOrder.id,
+            menuItemId: item.id,
+            qty,
+            notes: notes || null,
+          }, currentOrder.version);
+        }
+      }
+    })();
+  }, [currentOrder, currentOrderReadonlyReason, calculateOrderTotals, loadRemotePOSData]);
 
   // Phase 3.7: Clamp min qty to 1 (removal only via explicit trash)
   const updateLineQty = useCallback((lineId: string, qty: number) => {
-    if (!currentOrder || qty < 1) return;
+    if (!currentOrder || currentOrderReadonlyReason || qty < 1) return;
 
     const updatedLines = currentOrder.lines.map(l => {
       if (l.id === lineId) {
@@ -375,10 +587,51 @@ export function POSProvider({ children }: { children: React.ReactNode }) {
 
     setCurrentOrder(updatedOrder);
     setActiveOrders(prev => prev.map(o => o.id === updatedOrder.id ? updatedOrder : o));
-  }, [currentOrder, calculateOrderTotals]);
+    const updatedLine = updatedLines.find((line) => line.id === lineId);
+    if (!updatedLine) return;
+
+    (async () => {
+      try {
+        if (!navigator.onLine) {
+          await enqueueSyncAction('ORDER_LINE_UPDATE', {
+            orderId: currentOrder.id,
+            lineId,
+            qty,
+            notes: updatedLine.notes || null,
+          }, currentOrder.version);
+          return;
+        }
+
+        await apiRequest(`/api/orders/${currentOrder.id}/lines/${lineId}`, {
+          method: 'PATCH',
+          idempotencyKey: createIdempotencyKey('line-update'),
+          body: JSON.stringify({
+            qty,
+            notes: updatedLine.notes || null,
+          }),
+        });
+        await loadRemotePOSData();
+      } catch (error) {
+        const readonlyReason = getReadonlyReasonFromError(error);
+        if (readonlyReason) {
+          setCurrentOrderReadonlyReason(readonlyReason);
+          return;
+        }
+        if (!shouldQueueAfterError(error)) {
+          return;
+        }
+        await enqueueSyncAction('ORDER_LINE_UPDATE', {
+          orderId: currentOrder.id,
+          lineId,
+          qty,
+          notes: updatedLine.notes || null,
+        }, currentOrder.version);
+      }
+    })();
+  }, [currentOrder, currentOrderReadonlyReason, calculateOrderTotals, loadRemotePOSData]);
 
   const removeLineFromOrder = useCallback((lineId: string) => {
-    if (!currentOrder) return;
+    if (!currentOrder || currentOrderReadonlyReason) return;
     const updatedLines = currentOrder.lines.filter(l => l.id !== lineId);
     const updatedOrder = calculateOrderTotals({
       ...currentOrder,
@@ -386,10 +639,41 @@ export function POSProvider({ children }: { children: React.ReactNode }) {
     });
     setCurrentOrder(updatedOrder);
     setActiveOrders(prev => prev.map(o => o.id === updatedOrder.id ? updatedOrder : o));
-  }, [currentOrder, calculateOrderTotals]);
+
+    (async () => {
+      try {
+        if (!navigator.onLine) {
+          await enqueueSyncAction('ORDER_LINE_DELETE', {
+            orderId: currentOrder.id,
+            lineId,
+          }, currentOrder.version);
+          return;
+        }
+
+        await apiRequest(`/api/orders/${currentOrder.id}/lines/${lineId}`, {
+          method: 'DELETE',
+          idempotencyKey: createIdempotencyKey('line-delete'),
+        });
+        await loadRemotePOSData();
+      } catch (error) {
+        const readonlyReason = getReadonlyReasonFromError(error);
+        if (readonlyReason) {
+          setCurrentOrderReadonlyReason(readonlyReason);
+          return;
+        }
+        if (!shouldQueueAfterError(error)) {
+          return;
+        }
+        await enqueueSyncAction('ORDER_LINE_DELETE', {
+          orderId: currentOrder.id,
+          lineId,
+        }, currentOrder.version);
+      }
+    })();
+  }, [currentOrder, currentOrderReadonlyReason, calculateOrderTotals, loadRemotePOSData]);
 
   const applyDiscount = useCallback((type: DiscountType, value: number, reason: string) => {
-    if (!currentOrder) return;
+    if (!currentOrder || currentOrderReadonlyReason) return;
 
     const updatedOrder = calculateOrderTotals({
       ...currentOrder,
@@ -400,10 +684,50 @@ export function POSProvider({ children }: { children: React.ReactNode }) {
 
     setCurrentOrder(updatedOrder);
     setActiveOrders(prev => prev.map(o => o.id === updatedOrder.id ? updatedOrder : o));
-  }, [currentOrder, calculateOrderTotals]);
+
+    (async () => {
+      try {
+        if (!navigator.onLine) {
+          await enqueueSyncAction('ORDER_DISCOUNT_APPLY', {
+            orderId: currentOrder.id,
+            discountType: type,
+            discountValue: value,
+            discountReason: reason,
+          }, currentOrder.version);
+          return;
+        }
+
+        await apiRequest(`/api/orders/${currentOrder.id}/discount`, {
+          method: 'POST',
+          idempotencyKey: createIdempotencyKey('discount-apply'),
+          body: JSON.stringify({
+            discountType: type,
+            discountValue: value,
+            discountReason: reason,
+          }),
+        });
+        await loadRemotePOSData();
+      } catch (error) {
+        const readonlyReason = getReadonlyReasonFromError(error);
+        if (readonlyReason) {
+          setCurrentOrderReadonlyReason(readonlyReason);
+          return;
+        }
+        if (!shouldQueueAfterError(error)) {
+          return;
+        }
+        await enqueueSyncAction('ORDER_DISCOUNT_APPLY', {
+          orderId: currentOrder.id,
+          discountType: type,
+          discountValue: value,
+          discountReason: reason,
+        }, currentOrder.version);
+      }
+    })();
+  }, [currentOrder, currentOrderReadonlyReason, calculateOrderTotals, loadRemotePOSData]);
 
   const removeDiscount = useCallback(() => {
-    if (!currentOrder) return;
+    if (!currentOrder || currentOrderReadonlyReason) return;
 
     const updatedOrder = calculateOrderTotals({
       ...currentOrder,
@@ -414,11 +738,40 @@ export function POSProvider({ children }: { children: React.ReactNode }) {
 
     setCurrentOrder(updatedOrder);
     setActiveOrders(prev => prev.map(o => o.id === updatedOrder.id ? updatedOrder : o));
-  }, [currentOrder, calculateOrderTotals]);
+
+    (async () => {
+      try {
+        if (!navigator.onLine) {
+          await enqueueSyncAction('ORDER_DISCOUNT_REMOVE', {
+            orderId: currentOrder.id,
+          }, currentOrder.version);
+          return;
+        }
+
+        await apiRequest(`/api/orders/${currentOrder.id}/discount`, {
+          method: 'DELETE',
+          idempotencyKey: createIdempotencyKey('discount-remove'),
+        });
+        await loadRemotePOSData();
+      } catch (error) {
+        const readonlyReason = getReadonlyReasonFromError(error);
+        if (readonlyReason) {
+          setCurrentOrderReadonlyReason(readonlyReason);
+          return;
+        }
+        if (!shouldQueueAfterError(error)) {
+          return;
+        }
+        await enqueueSyncAction('ORDER_DISCOUNT_REMOVE', {
+          orderId: currentOrder.id,
+        }, currentOrder.version);
+      }
+    })();
+  }, [currentOrder, currentOrderReadonlyReason, calculateOrderTotals, loadRemotePOSData]);
 
   // Phase 1.7 + 3.1: Store payment method, guard double-tap
   const processPayment = useCallback((method: PaymentMethod, amount: number, reference?: string) => {
-    if (!currentOrder) return;
+    if (!currentOrder || currentOrderReadonlyReason) return;
     if (currentOrder.status === 'paid') return; // Phase 3.1: idempotency
 
     const updatedOrder: Order = {
@@ -431,7 +784,58 @@ export function POSProvider({ children }: { children: React.ReactNode }) {
 
     setCurrentOrder(updatedOrder);
     setActiveOrders(prev => prev.map(o => o.id === updatedOrder.id ? updatedOrder : o));
-  }, [currentOrder]);
+
+    (async () => {
+      try {
+        if (!navigator.onLine) {
+          if (currentOrder.status === 'open') {
+            await enqueueSyncAction('ORDER_BILL', {
+              orderId: currentOrder.id,
+            }, currentOrder.version);
+          }
+          await enqueueSyncAction('ORDER_PAYMENT_ADD', {
+            orderId: currentOrder.id,
+            method,
+            amount,
+            reference: reference || null,
+          }, currentOrder.version);
+          return;
+        }
+
+        if (currentOrder.status === 'open') {
+          await apiRequest(`/api/orders/${currentOrder.id}/bill`, {
+            method: 'POST',
+            idempotencyKey: createIdempotencyKey('order-bill'),
+          });
+        }
+        await apiRequest(`/api/orders/${currentOrder.id}/payments`, {
+          method: 'POST',
+          idempotencyKey: createIdempotencyKey('order-payment'),
+          body: JSON.stringify({
+            method,
+            amount,
+            reference: reference || null,
+          }),
+        });
+        await loadRemotePOSData();
+      } catch (error) {
+        const readonlyReason = getReadonlyReasonFromError(error);
+        if (readonlyReason) {
+          setCurrentOrderReadonlyReason(readonlyReason);
+          return;
+        }
+        if (!shouldQueueAfterError(error)) {
+          return;
+        }
+        await enqueueSyncAction('ORDER_PAYMENT_ADD', {
+          orderId: currentOrder.id,
+          method,
+          amount,
+          reference: reference || null,
+        }, currentOrder.version);
+      }
+    })();
+  }, [currentOrder, currentOrderReadonlyReason, loadRemotePOSData]);
 
   const closeOrder = useCallback(() => {
     if (!currentOrder) return;
@@ -440,12 +844,14 @@ export function POSProvider({ children }: { children: React.ReactNode }) {
       setCompletedOrders(prev => [...prev, currentOrder]);
     }
     setActiveOrders(prev => prev.filter(o => o.id !== currentOrder.id));
+    setCurrentOrderReadonlyReason(null);
     setCurrentOrder(null);
+    apiRequest(`/api/orders/${currentOrder.id}/lock`, { method: 'DELETE' }).catch(() => {});
   }, [currentOrder]);
 
   // Phase 3.4: Cancel paid order keeps audit trail
   const cancelOrder = useCallback((reason: string) => {
-    if (!currentOrder) return;
+    if (!currentOrder || currentOrderReadonlyReason) return;
 
     if (currentOrder.status === 'paid') {
       // Keep paid order with cancelled status for audit trail
@@ -462,11 +868,87 @@ export function POSProvider({ children }: { children: React.ReactNode }) {
       setActiveOrders(prev => prev.filter(o => o.id !== currentOrder.id));
       setCurrentOrder(null);
     }
-  }, [currentOrder]);
+
+    (async () => {
+      try {
+        if (!navigator.onLine) {
+          await enqueueSyncAction('ORDER_CANCEL', {
+            orderId: currentOrder.id,
+            reason,
+          }, currentOrder.version);
+          return;
+        }
+
+        await apiRequest(`/api/orders/${currentOrder.id}/cancel`, {
+          method: 'POST',
+          idempotencyKey: createIdempotencyKey('order-cancel'),
+          body: JSON.stringify({ reason }),
+        });
+        await loadRemotePOSData();
+      } catch (error) {
+        const readonlyReason = getReadonlyReasonFromError(error);
+        if (readonlyReason) {
+          setCurrentOrderReadonlyReason(readonlyReason);
+          return;
+        }
+        if (!shouldQueueAfterError(error)) {
+          return;
+        }
+        await enqueueSyncAction('ORDER_CANCEL', {
+          orderId: currentOrder.id,
+          reason,
+        }, currentOrder.version);
+      }
+    })();
+  }, [currentOrder, currentOrderReadonlyReason, loadRemotePOSData]);
+
+  const sendKOT = useCallback(async (): Promise<'sent' | 'queued' | 'no-items' | 'blocked' | 'error'> => {
+    if (!currentOrder || currentOrderReadonlyReason) {
+      return 'blocked';
+    }
+
+    const hasUnsentLines = currentOrder.lines.some((line) => !line.kotSent);
+    if (!hasUnsentLines) {
+      return 'no-items';
+    }
+
+    try {
+      if (!navigator.onLine) {
+        await enqueueSyncAction('KOT_CREATE', {
+          orderId: currentOrder.id,
+        }, currentOrder.version);
+        return 'queued';
+      }
+
+      await apiRequest(`/api/orders/${currentOrder.id}/kots`, {
+        method: 'POST',
+        idempotencyKey: createIdempotencyKey('kot-create'),
+      });
+      await loadRemotePOSData();
+      return 'sent';
+    } catch (error) {
+      const readonlyReason = getReadonlyReasonFromError(error);
+      if (readonlyReason) {
+        setCurrentOrderReadonlyReason(readonlyReason);
+        return 'blocked';
+      }
+      if (shouldQueueAfterError(error)) {
+        await enqueueSyncAction('KOT_CREATE', {
+          orderId: currentOrder.id,
+        }, currentOrder.version);
+        return 'queued';
+      }
+      return 'error';
+    }
+  }, [currentOrder, currentOrderReadonlyReason, loadRemotePOSData]);
 
   const clearCurrentOrder = useCallback(() => {
+    if (currentOrder) {
+      apiRequest(`/api/orders/${currentOrder.id}/lock`, { method: 'DELETE' }).catch(() => {});
+    }
+    setCurrentOrderReadonlyReason(null);
     setCurrentOrder(null);
-  }, []);
+  }, [currentOrder]);
 
   const selectTable = useCallback((tableId: string) => {
     const table = tables.find(t => t.id === tableId);
@@ -475,7 +957,23 @@ export function POSProvider({ children }: { children: React.ReactNode }) {
     const existingOrderId = tableOrderMap.get(tableId);
     if (existingOrderId) {
       loadOrder(existingOrderId);
+      apiRequest(`/api/orders/${existingOrderId}/lock`, {
+        method: 'POST',
+        body: JSON.stringify({ ttlSeconds: 120 }),
+      })
+        .then(() => {
+          setCurrentOrderReadonlyReason(null);
+        })
+        .catch((error) => {
+          const readonlyReason = getReadonlyReasonFromError(error);
+          if (readonlyReason) {
+            setCurrentOrderReadonlyReason(readonlyReason);
+            return;
+          }
+          setCurrentOrderReadonlyReason(null);
+        });
     } else {
+      setCurrentOrderReadonlyReason(null);
       startNewOrder('dine-in', tableId);
     }
   }, [tables, tableOrderMap, loadOrder, startNewOrder]);
@@ -489,9 +987,34 @@ export function POSProvider({ children }: { children: React.ReactNode }) {
     setActiveOrders(prev => prev.filter(o => o.id !== orderId));
     // If the freed order was the current order, clear it
     if (currentOrder?.id === orderId) {
+      setCurrentOrderReadonlyReason(null);
       setCurrentOrder(null);
     }
-  }, [tableOrderMap, currentOrder]);
+
+    (async () => {
+      try {
+        if (!navigator.onLine) {
+          await enqueueSyncAction('ORDER_CANCEL', {
+            orderId,
+            reason: 'Table freed manually',
+          });
+          return;
+        }
+
+        await apiRequest(`/api/orders/${orderId}/cancel`, {
+          method: 'POST',
+          idempotencyKey: createIdempotencyKey('table-free'),
+          body: JSON.stringify({ reason: 'Table freed manually' }),
+        });
+        await loadRemotePOSData();
+      } catch {
+        await enqueueSyncAction('ORDER_CANCEL', {
+          orderId,
+          reason: 'Table freed manually',
+        });
+      }
+    })();
+  }, [tableOrderMap, currentOrder, loadRemotePOSData]);
 
   // Menu Management
   const addMenuItem = useCallback((item: Omit<MenuItem, 'id'>) => {
@@ -500,17 +1023,37 @@ export function POSProvider({ children }: { children: React.ReactNode }) {
       id: generateId(),
     };
     setMenuItems(prev => [...prev, newItem]);
-  }, []);
+
+    apiRequest<Record<string, unknown>>('/api/menu-items', {
+      method: 'POST',
+      body: JSON.stringify(item),
+    })
+      .then(loadRemotePOSData)
+      .catch(() => {});
+  }, [loadRemotePOSData]);
 
   const updateMenuItem = useCallback((id: string, updates: Partial<MenuItem>) => {
     setMenuItems(prev => prev.map(item =>
       item.id === id ? { ...item, ...updates } : item
     ));
-  }, []);
+
+    apiRequest(`/api/menu-items/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(updates),
+    })
+      .then(loadRemotePOSData)
+      .catch(() => {});
+  }, [loadRemotePOSData]);
 
   const deleteMenuItem = useCallback((id: string) => {
     setMenuItems(prev => prev.filter(item => item.id !== id));
-  }, []);
+
+    apiRequest(`/api/menu-items/${id}`, {
+      method: 'DELETE',
+    })
+      .then(loadRemotePOSData)
+      .catch(() => {});
+  }, [loadRemotePOSData]);
 
   const addCategory = useCallback((category: Omit<Category, 'id'> & { id?: string }) => {
     const newCat: Category = {
@@ -518,19 +1061,42 @@ export function POSProvider({ children }: { children: React.ReactNode }) {
       id: category.id || generateId(),
     };
     setCategories(prev => [...prev, newCat]);
-  }, []);
+
+    apiRequest('/api/categories', {
+      method: 'POST',
+      body: JSON.stringify(category),
+    })
+      .then(loadRemotePOSData)
+      .catch(() => {});
+  }, [loadRemotePOSData]);
 
   const updateCategory = useCallback((id: string, updates: Partial<Category>) => {
     setCategories(prev => prev.map(cat =>
       cat.id === id ? { ...cat, ...updates } : cat
     ));
-  }, []);
+
+    apiRequest(`/api/categories/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(updates),
+    })
+      .then(loadRemotePOSData)
+      .catch(() => {});
+  }, [loadRemotePOSData]);
 
   const deleteCategory = useCallback((id: string) => {
     setCategories(prev => prev.filter(cat => cat.id !== id));
-  }, []);
+    apiRequest(`/api/categories/${id}`, {
+      method: 'DELETE',
+    })
+      .then(loadRemotePOSData)
+      .catch(() => {});
+  }, [loadRemotePOSData]);
 
-  const refreshData = useCallback(() => {}, []);
+  const refreshData = useCallback(() => {
+    flushSyncQueue()
+      .then(loadRemotePOSData)
+      .catch(() => {});
+  }, [loadRemotePOSData]);
 
   return (
     <POSContext.Provider value={{
@@ -541,6 +1107,7 @@ export function POSProvider({ children }: { children: React.ReactNode }) {
       completedOrders,
       dailySummaries,
       isLoading,
+      currentOrderReadonlyReason,
       tableOrderMap,
       startNewOrder,
       addItemToOrder,
@@ -551,6 +1118,7 @@ export function POSProvider({ children }: { children: React.ReactNode }) {
       processPayment,
       closeOrder,
       cancelOrder,
+      sendKOT,
       clearCurrentOrder,
       loadOrder,
       selectTable,

@@ -1,6 +1,6 @@
 // Core Types for Restaurant POS System
 
-export type UserRole = 'owner' | 'manager' | 'cashier';
+export type UserRole = 'owner' | 'manager' | 'cashier' | 'kitchen';
 
 export interface User {
   id: string;
@@ -24,6 +24,10 @@ export interface Table {
   areaId: string;
   name: string;
   isActive: boolean;
+  currentOrderId?: string | null;
+  lockOwnerDeviceId?: string | null;
+  lockExpiresAt?: Date | null;
+  version?: number;
 }
 
 export interface Category {
@@ -46,7 +50,7 @@ export interface MenuItem {
 export type OrderType = 'dine-in' | 'takeaway';
 export type OrderStatus = 'open' | 'billed' | 'paid' | 'cancelled';
 export type PaymentStatus = 'pending' | 'partial' | 'paid';
-export type PaymentMethod = 'cash' | 'upi';
+export type PaymentMethod = 'cash' | 'upi' | 'card';
 export type DiscountType = 'percentage' | 'flat';
 
 export interface OrderLine {
@@ -59,6 +63,8 @@ export interface OrderLine {
   lineTotal: number;
   taxRatePercent: number;
   notes?: string;
+  version?: number;
+  kotSent?: boolean;
 }
 
 export interface Order {
@@ -79,6 +85,11 @@ export interface Order {
   paymentStatus: PaymentStatus;
   cancelReason?: string;
   cancelledAt?: Date;
+  ownerUserId?: string;
+  version?: number;
+  updatedAt?: Date;
+  syncStatus?: 'synced' | 'pending' | 'conflict';
+  lastSyncedAt?: Date;
   createdBy: string;
   createdAt: Date;
   closedAt?: Date;
@@ -135,5 +146,6 @@ export interface DashboardStats {
   paymentSplit: {
     cash: number;
     upi: number;
+    card: number;
   };
 }

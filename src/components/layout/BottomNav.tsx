@@ -35,7 +35,7 @@ import { useBackHandler } from '@/hooks/use-back-handler';
 const allNavItems = [
   { path: '/pos', label: L.pos, icon: ShoppingCart, permission: 'pos.create', primaryFor: ['owner', 'manager', 'cashier'] },
   { path: '/tables', label: L.tables, icon: UtensilsCrossed, permission: 'tables.view', primaryFor: ['owner', 'manager', 'cashier'] },
-  { path: '/dashboard', label: L.dashboard, icon: LayoutDashboard, permission: 'pos.create', primaryFor: ['owner', 'manager'] },
+  { path: '/dashboard', label: L.dashboard, icon: LayoutDashboard, permission: 'reports.view', primaryFor: ['owner', 'manager'] },
   { path: '/menu', label: L.menu, icon: MenuIcon, permission: 'menu.manage', primaryFor: [] },
   { path: '/settings', label: L.settings, icon: Settings, permission: 'settings.manage', primaryFor: [] },
 ];
@@ -80,7 +80,7 @@ export function BottomNav() {
 
   return (
     <>
-      <nav className="fixed bottom-0 left-0 right-0 bg-card border-t border-border z-50 safe-area-bottom">
+      <nav className="fixed bottom-0 left-0 right-0 bg-card border-t border-border z-50 safe-area-bottom md:hidden">
         <div className="flex items-center justify-around h-16">
           {visibleTabs.map((item) => {
             const isActive = location.pathname === item.path;

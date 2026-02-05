@@ -2,6 +2,8 @@ import React, { createContext, useContext, useState, useCallback, useEffect } fr
 import { User, Area, Table, RestaurantSettings } from '@/types';
 import { mockUsers, mockAreas, mockTables, defaultSettings } from '@/data/mockData';
 import { storage } from '@/lib/storage';
+import { apiRequest } from '@/lib/api/client';
+import { mapSettings, mapTable, mapUser } from '@/lib/api/mappers';
 
 interface SettingsContextType {
   // Data
@@ -43,33 +45,51 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const loadStoredData = async () => {
       try {
-        const [
-          storedUsers,
-          storedAreas,
-          storedTables,
-          storedSettings,
-        ] = await Promise.all([
-          storage.getUsers<User[]>(),
-          storage.getAreas<Area[]>(),
-          storage.getTables<Table[]>(),
-          storage.getRestaurantSettings<RestaurantSettings>(),
+        const [remoteUsers, remoteAreas, remoteTables, remoteSettings] = await Promise.all([
+          apiRequest<Record<string, unknown>[]>('/api/users').catch(() => null),
+          apiRequest<Record<string, unknown>[]>('/api/areas').catch(() => null),
+          apiRequest<Record<string, unknown>[]>('/api/tables').catch(() => null),
+          apiRequest<Record<string, unknown>>('/api/settings').catch(() => null),
         ]);
 
-        if (storedUsers && storedUsers.length > 0) {
-          const usersWithDates = storedUsers.map(user => ({
-            ...user,
-            createdAt: new Date(user.createdAt),
+        if (remoteUsers) {
+          setUsers(remoteUsers.map(mapUser));
+        } else {
+          const storedUsers = await storage.getUsers<User[]>();
+          if (storedUsers && storedUsers.length > 0) {
+            setUsers(storedUsers.map(user => ({ ...user, createdAt: new Date(user.createdAt) })));
+          }
+        }
+
+        if (remoteAreas) {
+          const mappedAreas: Area[] = remoteAreas.map((area) => ({
+            id: String(area.id),
+            name: String(area.name || ''),
           }));
-          setUsers(usersWithDates);
+          setAreas(mappedAreas);
+        } else {
+          const storedAreas = await storage.getAreas<Area[]>();
+          if (storedAreas) {
+            setAreas(storedAreas);
+          }
         }
-        if (storedAreas) {
-          setAreas(storedAreas);
+
+        if (remoteTables) {
+          setTables(remoteTables.map(mapTable));
+        } else {
+          const storedTables = await storage.getTables<Table[]>();
+          if (storedTables) {
+            setTables(storedTables);
+          }
         }
-        if (storedTables) {
-          setTables(storedTables);
-        }
-        if (storedSettings) {
-          setSettings(storedSettings);
+
+        if (remoteSettings) {
+          setSettings(mapSettings(remoteSettings));
+        } else {
+          const storedSettings = await storage.getRestaurantSettings<RestaurantSettings>();
+          if (storedSettings) {
+            setSettings(storedSettings);
+          }
         }
       } catch (error) {
         console.error('Error loading stored settings data:', error);
@@ -108,65 +128,108 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
 
   // User management
   const addUser = useCallback((user: Omit<User, 'id' | 'createdAt'>) => {
-    const newUser: User = {
-      ...user,
-      id: crypto.randomUUID(),
-      createdAt: new Date(),
-    };
-    setUsers(prev => [...prev, newUser]);
+    (async () => {
+      try {
+        const created = await apiRequest<Record<string, unknown>>('/api/users', {
+          method: 'POST',
+          body: JSON.stringify(user),
+        });
+        setUsers(prev => [...prev, mapUser(created)]);
+      } catch {
+        const newUser: User = {
+          ...user,
+          id: crypto.randomUUID(),
+          createdAt: new Date(),
+        };
+        setUsers(prev => [...prev, newUser]);
+      }
+    })();
   }, []);
 
   const updateUser = useCallback((id: string, updates: Partial<User>) => {
-    setUsers(prev => prev.map(user =>
-      user.id === id ? { ...user, ...updates } : user
-    ));
+    setUsers(prev => prev.map(user => user.id === id ? { ...user, ...updates } : user));
+    apiRequest(`/api/users/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(updates),
+    }).catch(() => {});
   }, []);
 
   const deleteUser = useCallback((id: string) => {
     setUsers(prev => prev.filter(user => user.id !== id));
+    apiRequest(`/api/users/${id}`, { method: 'DELETE' }).catch(() => {});
   }, []);
 
   // Area management
   const addArea = useCallback((area: Omit<Area, 'id'>) => {
-    const newArea: Area = {
-      ...area,
-      id: crypto.randomUUID(),
-    };
-    setAreas(prev => [...prev, newArea]);
+    (async () => {
+      try {
+        const created = await apiRequest<Record<string, unknown>>('/api/areas', {
+          method: 'POST',
+          body: JSON.stringify(area),
+        });
+        setAreas(prev => [...prev, { id: String(created.id), name: String(created.name || '') }]);
+      } catch {
+        const newArea: Area = {
+          ...area,
+          id: crypto.randomUUID(),
+        };
+        setAreas(prev => [...prev, newArea]);
+      }
+    })();
   }, []);
 
   const updateArea = useCallback((id: string, updates: Partial<Area>) => {
-    setAreas(prev => prev.map(area =>
-      area.id === id ? { ...area, ...updates } : area
-    ));
+    setAreas(prev => prev.map(area => area.id === id ? { ...area, ...updates } : area));
+    apiRequest(`/api/areas/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(updates),
+    }).catch(() => {});
   }, []);
 
   const deleteArea = useCallback((id: string) => {
     setAreas(prev => prev.filter(area => area.id !== id));
+    apiRequest(`/api/areas/${id}`, { method: 'DELETE' }).catch(() => {});
   }, []);
 
   // Table management
   const addTable = useCallback((table: Omit<Table, 'id'>) => {
-    const newTable: Table = {
-      ...table,
-      id: crypto.randomUUID(),
-    };
-    setTables(prev => [...prev, newTable]);
+    (async () => {
+      try {
+        const created = await apiRequest<Record<string, unknown>>('/api/tables', {
+          method: 'POST',
+          body: JSON.stringify(table),
+        });
+        setTables(prev => [...prev, mapTable(created)]);
+      } catch {
+        const newTable: Table = {
+          ...table,
+          id: crypto.randomUUID(),
+        };
+        setTables(prev => [...prev, newTable]);
+      }
+    })();
   }, []);
 
   const updateTable = useCallback((id: string, updates: Partial<Table>) => {
-    setTables(prev => prev.map(table =>
-      table.id === id ? { ...table, ...updates } : table
-    ));
+    setTables(prev => prev.map(table => table.id === id ? { ...table, ...updates } : table));
+    apiRequest(`/api/tables/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(updates),
+    }).catch(() => {});
   }, []);
 
   const deleteTable = useCallback((id: string) => {
     setTables(prev => prev.filter(table => table.id !== id));
+    apiRequest(`/api/tables/${id}`, { method: 'DELETE' }).catch(() => {});
   }, []);
 
   // Settings
   const updateSettings = useCallback((updates: Partial<RestaurantSettings>) => {
     setSettings(prev => ({ ...prev, ...updates }));
+    apiRequest('/api/settings', {
+      method: 'PATCH',
+      body: JSON.stringify(updates),
+    }).catch(() => {});
   }, []);
 
   return (

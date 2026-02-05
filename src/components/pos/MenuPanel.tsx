@@ -3,12 +3,12 @@ import { Search, ChevronLeft, ChevronRight, Minus, Plus } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { usePOS } from '@/contexts/POSContext';
-import { MenuItem } from '@/types';
+import { MenuItem, OrderLine } from '@/types';
 import { Haptics, ImpactStyle } from '@capacitor/haptics';
 import { L } from '@/lib/labels';
 
 export function MenuPanel() {
-  const { menuItems, categories, currentOrder, addItemToOrder, updateLineQty } = usePOS();
+  const { menuItems, categories, currentOrder, currentOrderReadonlyReason, addItemToOrder, updateLineQty } = usePOS();
   const [search, setSearch] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const categoryScrollRef = useRef<HTMLDivElement>(null);
@@ -23,17 +23,26 @@ export function MenuPanel() {
     });
   }, [menuItems, search, selectedCategory]);
 
-  // Map of menuItemId -> {lineId, qty} from current order (aggregate if multiple lines)
+  // Map of menuItemId -> controllable line when there is exactly one non-noted line.
+  // For customized/multiple lines we show aggregate but keep controls disabled to avoid wrong edits.
   const orderQtyMap = useMemo(() => {
-    const map = new Map<string, { lineId: string; qty: number }>();
+    const map = new Map<string, { lineId: string | null; qty: number; adjustable: boolean }>();
     if (currentOrder) {
+      const groupedByItem = new Map<string, OrderLine[]>();
       for (const line of currentOrder.lines) {
-        const existing = map.get(line.menuItemId);
-        if (existing) {
-          map.set(line.menuItemId, { lineId: existing.lineId, qty: existing.qty + line.qty });
-        } else {
-          map.set(line.menuItemId, { lineId: line.id, qty: line.qty });
-        }
+        const lines = groupedByItem.get(line.menuItemId) || [];
+        lines.push(line);
+        groupedByItem.set(line.menuItemId, lines);
+      }
+
+      for (const [menuItemId, lines] of groupedByItem.entries()) {
+        const qty = lines.reduce((sum, line) => sum + line.qty, 0);
+        const singlePlainLine = lines.length === 1 && !lines[0].notes;
+        map.set(menuItemId, {
+          lineId: singlePlainLine ? lines[0].id : null,
+          qty,
+          adjustable: singlePlainLine,
+        });
       }
     }
     return map;
@@ -64,12 +73,20 @@ export function MenuPanel() {
   };
 
   const handleAddItem = async (item: MenuItem) => {
-    try { await Haptics.impact({ style: ImpactStyle.Medium }); } catch (e) {}
+    try {
+      await Haptics.impact({ style: ImpactStyle.Medium });
+    } catch (error) {
+      void error;
+    }
     addItemToOrder(item);
   };
 
   const handleInlineQty = async (lineId: string, newQty: number) => {
-    try { await Haptics.impact({ style: ImpactStyle.Light }); } catch (e) {}
+    try {
+      await Haptics.impact({ style: ImpactStyle.Light });
+    } catch (error) {
+      void error;
+    }
     updateLineQty(lineId, newQty);
   };
 
@@ -114,6 +131,11 @@ export function MenuPanel() {
 
       {/* Menu Items */}
       <div className="flex-1 overflow-y-auto p-3">
+        {currentOrderReadonlyReason && (
+          <div className="mb-3 rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm text-warning-foreground">
+            {currentOrderReadonlyReason}
+          </div>
+        )}
         {filteredItems.length === 0 ? (
           <div className="flex items-center justify-center h-40 text-muted-foreground">
             {menuItems.length === 0 ? L.noMenuItems : L.noItems}
@@ -141,23 +163,50 @@ export function MenuPanel() {
                   {/* Phase 4.4: Inline quantity controls or Add button */}
                   <div className="mt-3">
                     {inOrder ? (
-                      <div className="flex items-center justify-center bg-primary/10 rounded-lg">
-                        <Button variant="ghost" size="icon" className="h-10 w-10" onClick={() => handleInlineQty(inOrder.lineId, inOrder.qty - 1)} disabled={inOrder.qty <= 1}>
-                          <Minus className="h-4 w-4" />
+                      inOrder.adjustable ? (
+                        <div className="flex items-center justify-center bg-primary/10 rounded-lg">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-10 w-10"
+                            onClick={() => inOrder.lineId && handleInlineQty(inOrder.lineId, inOrder.qty - 1)}
+                            disabled={inOrder.qty <= 1 || !!currentOrderReadonlyReason}
+                          >
+                            <Minus className="h-4 w-4" />
+                          </Button>
+                          <span className="w-10 text-center text-lg font-bold text-primary">{inOrder.qty}</span>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-10 w-10"
+                            onClick={() => inOrder.lineId && handleInlineQty(inOrder.lineId, inOrder.qty + 1)}
+                            disabled={!!currentOrderReadonlyReason}
+                          >
+                            <Plus className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      ) : (
+                        <Button
+                          variant="outline"
+                          className="w-full h-10"
+                          onClick={() => handleAddItem(item)}
+                          disabled={!!currentOrderReadonlyReason}
+                        >
+                          + {L.add} ({inOrder.qty})
                         </Button>
-                        <span className="w-10 text-center text-lg font-bold text-primary">{inOrder.qty}</span>
-                        <Button variant="ghost" size="icon" className="h-10 w-10" onClick={() => handleInlineQty(inOrder.lineId, inOrder.qty + 1)}>
-                          <Plus className="h-4 w-4" />
-                        </Button>
-                      </div>
+                      )
                     ) : (
                       <Button
                         variant="outline"
                         className="w-full h-10"
                         onClick={() => handleAddItem(item)}
+                        disabled={!!currentOrderReadonlyReason}
                       >
                         + {L.add}
                       </Button>
+                    )}
+                    {inOrder && !inOrder.adjustable && (
+                      <p className="mt-1 text-center text-xs text-muted-foreground">Multiple/custom lines — edit in cart</p>
                     )}
                   </div>
                 </div>

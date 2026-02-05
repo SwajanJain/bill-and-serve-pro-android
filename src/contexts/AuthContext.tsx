@@ -1,6 +1,8 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
-import { User, UserRole } from '@/types';
+import { User } from '@/types';
 import { storage } from '@/lib/storage';
+import { apiRequest } from '@/lib/api/client';
+import { mapUser } from '@/lib/api/mappers';
 
 interface AuthContextType {
   user: User | null;
@@ -29,6 +31,10 @@ const rolePermissions: Record<string, string[]> = {
     'tables.view',
     'menu.view',
   ],
+  kitchen: [
+    'pos.view',
+    'kitchen.view',
+  ],
 };
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -40,6 +46,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const loadSavedUser = async () => {
       try {
+        const token = await storage.getAuthToken();
+        if (token) {
+          try {
+            const remoteUser = await apiRequest<Record<string, unknown>>('/api/auth/me');
+            setUser(mapUser(remoteUser));
+            return;
+          } catch {
+            await storage.saveAuthToken(null);
+          }
+        }
+
         const savedUser = await storage.getCurrentUser<User>();
         if (savedUser) {
           const userWithDate = {
@@ -102,22 +119,37 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // Phase 2.1: Load users from storage, check isActive
   const pinLogin = useCallback(async (pin: string): Promise<boolean> => {
-    const storedUsers = await storage.getUsers<User[]>();
-    const users = storedUsers || [];
-    const foundUser = users.find(u => u.pin === pin);
+    try {
+      const response = await apiRequest<{
+        token: string;
+        user: Record<string, unknown>;
+      }>('/api/auth/pin-login', {
+        method: 'POST',
+        body: JSON.stringify({ pin }),
+      });
 
-    if (foundUser && foundUser.isActive) {
-      const userWithDate = {
-        ...foundUser,
-        createdAt: new Date(foundUser.createdAt),
-      };
-      setUser(userWithDate);
+      await storage.saveAuthToken(response.token);
+      setUser(mapUser(response.user));
       return true;
+    } catch {
+      const storedUsers = await storage.getUsers<User[]>();
+      const users = storedUsers || [];
+      const foundUser = users.find(u => u.pin === pin);
+
+      if (foundUser && foundUser.isActive) {
+        const userWithDate = {
+          ...foundUser,
+          createdAt: new Date(foundUser.createdAt),
+        };
+        setUser(userWithDate);
+        return true;
+      }
+      return false;
     }
-    return false;
   }, []);
 
   const logout = useCallback(() => {
+    storage.saveAuthToken(null);
     setUser(null);
   }, []);
 

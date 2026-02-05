@@ -1,10 +1,22 @@
 import React, { useState, useEffect } from 'react';
 import { Wifi, WifiOff } from 'lucide-react';
 import { Network } from '@capacitor/network';
+import { getSyncConflicts, getSyncQueueSize } from '@/lib/sync/sync-engine';
 
 export function OfflineIndicator() {
   const [isOnline, setIsOnline] = useState(true);
   const [showIndicator, setShowIndicator] = useState(false);
+  const [pendingCount, setPendingCount] = useState(0);
+  const [conflictCount, setConflictCount] = useState(0);
+
+  const refreshSyncState = async () => {
+    const [queueSize, conflicts] = await Promise.all([
+      getSyncQueueSize(),
+      getSyncConflicts(),
+    ]);
+    setPendingCount(queueSize);
+    setConflictCount(conflicts.length);
+  };
 
   useEffect(() => {
     // Check initial status
@@ -24,11 +36,13 @@ export function OfflineIndicator() {
     };
 
     checkStatus();
+    refreshSyncState();
 
     // Listen for changes
     const listener = Network.addListener('networkStatusChange', (status) => {
       setIsOnline(status.connected);
       setShowIndicator(true);
+      refreshSyncState();
 
       // Hide "online" indicator after 3 seconds
       if (status.connected) {
@@ -50,16 +64,18 @@ export function OfflineIndicator() {
 
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
+    const interval = setInterval(refreshSyncState, 5000);
 
     return () => {
       listener.then(l => l.remove());
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
+      clearInterval(interval);
     };
   }, []);
 
   // Always show when offline, briefly show when online
-  if (isOnline && !showIndicator) {
+  if (isOnline && !showIndicator && pendingCount === 0 && conflictCount === 0) {
     return null;
   }
 
@@ -74,12 +90,22 @@ export function OfflineIndicator() {
       {isOnline ? (
         <>
           <Wifi className="h-4 w-4" />
-          <span>Back online</span>
+          <span>
+            {conflictCount > 0
+              ? `${conflictCount} sync conflicts need attention`
+              : pendingCount > 0
+                ? `Back online - syncing ${pendingCount} actions`
+                : 'Back online'}
+          </span>
         </>
       ) : (
         <>
           <WifiOff className="h-4 w-4 animate-pulse" />
-          <span>No internet - Data will sync when connected</span>
+          <span>
+            {pendingCount > 0
+              ? `Offline - ${pendingCount} actions queued`
+              : 'No internet - Data will sync when connected'}
+          </span>
         </>
       )}
     </div>

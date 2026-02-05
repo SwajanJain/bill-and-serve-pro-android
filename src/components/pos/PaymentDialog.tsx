@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { Banknote, Smartphone, Loader2 } from 'lucide-react';
+import { Banknote, CreditCard, Smartphone, Loader2 } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -29,10 +29,8 @@ export function PaymentDialog({ open, onOpenChange, onComplete }: PaymentDialogP
   const [reference, setReference] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
 
-  if (!currentOrder) return null;
-
-  const total = currentOrder.grandTotal; // Already rounded to nearest rupee in calculateOrderTotals
-  const received = parseInt(receivedAmount) || 0;
+  const total = currentOrder?.grandTotal ?? 0; // Already rounded to nearest rupee in calculateOrderTotals
+  const received = parseFloat(receivedAmount) || 0;
   const change = received - total;
 
   // Phase 4.3: Smart payment buttons based on bill total
@@ -57,6 +55,8 @@ export function PaymentDialog({ open, onOpenChange, onComplete }: PaymentDialogP
     return amounts.slice(0, 5);
   }, [total]);
 
+  if (!currentOrder) return null;
+
   const handlePayment = async () => {
     if (!currentOrder || isProcessing) return;
     if (currentOrder.status === 'paid') return;
@@ -64,7 +64,9 @@ export function PaymentDialog({ open, onOpenChange, onComplete }: PaymentDialogP
     setIsProcessing(true);
     try {
       await Haptics.impact({ style: ImpactStyle.Heavy });
-    } catch (e) {}
+    } catch (error) {
+      void error;
+    }
 
     const completedOrder: Order = {
       ...currentOrder,
@@ -86,9 +88,11 @@ export function PaymentDialog({ open, onOpenChange, onComplete }: PaymentDialogP
   const handleMethodSelect = async (method: PaymentMethod) => {
     try {
       await Haptics.impact({ style: ImpactStyle.Light });
-    } catch (e) {}
+    } catch (error) {
+      void error;
+    }
     setSelectedMethod(method);
-    if (method === 'upi') {
+    if (method === 'upi' || method === 'card') {
       setReceivedAmount(total.toString());
     } else {
       setReceivedAmount('');
@@ -98,16 +102,19 @@ export function PaymentDialog({ open, onOpenChange, onComplete }: PaymentDialogP
   const handleQuickAmount = async (amount: number) => {
     try {
       await Haptics.impact({ style: ImpactStyle.Light });
-    } catch (e) {}
+    } catch (error) {
+      void error;
+    }
     setReceivedAmount(amount.toString());
   };
 
   const primaryMethods = [
     { id: 'cash' as const, label: L.cash, icon: Banknote },
     { id: 'upi' as const, label: L.upi, icon: Smartphone },
+    { id: 'card' as const, label: 'Card', icon: CreditCard },
   ];
 
-  const canComplete = selectedMethod === 'upi' || received >= total;
+  const canComplete = selectedMethod === 'upi' || selectedMethod === 'card' || received >= total;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -126,7 +133,7 @@ export function PaymentDialog({ open, onOpenChange, onComplete }: PaymentDialogP
           {/* Payment Method */}
           <div className="space-y-3">
             <Label className="text-base">{L.paymentMethod}</Label>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-3 gap-3">
               {primaryMethods.map(method => (
                 <Button
                   key={method.id}
@@ -181,9 +188,11 @@ export function PaymentDialog({ open, onOpenChange, onComplete }: PaymentDialogP
           )}
 
           {/* UPI reference */}
-          {selectedMethod === 'upi' && (
+          {(selectedMethod === 'upi' || selectedMethod === 'card') && (
             <div className="space-y-2">
-              <Label className="text-base">Reference / Transaction ID (optional)</Label>
+              <Label className="text-base">
+                {selectedMethod === 'upi' ? 'Reference / Transaction ID (optional)' : 'Card Reference (optional)'}
+              </Label>
               <Input
                 placeholder="Enter reference number"
                 value={reference}

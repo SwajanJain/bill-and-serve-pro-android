@@ -2,15 +2,33 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { db } from '../db/index.js';
 import { orders, orderLines, tables, menuItems, kots, kotLines, payments } from '../db/schema.js';
-import { eq, and, desc, gte, lte, sql } from 'drizzle-orm';
+import { eq, and, desc, gte, lte } from 'drizzle-orm';
 import { authMiddleware, requireRole } from '../middleware/auth.js';
 import { generateId, generateOrderNumber, generateKOTNumber } from '../utils/id-generator.js';
-import { emitKOTCreated, emitOrderUpdated, emitTableUpdated } from '../socket/index.js';
+import {
+  emitKOTCreated,
+  emitOrderClosed,
+  emitOrderCreated,
+  emitOrderLineChanged,
+  emitOrderUpdated,
+  emitTableUpdated,
+} from '../socket/index.js';
+import {
+  acquireOrderLock,
+  getCachedIdempotencyResponse,
+  incrementOrderVersion,
+  recordDomainEvent,
+  releaseOrderLock,
+  storeIdempotencyResponse,
+  touchDeviceSession,
+  validateOrderLock,
+} from '../services/sync.service.js';
 
 // Validation schemas
 const createOrderSchema = z.object({
   orderType: z.enum(['dine-in', 'takeaway']),
   tableId: z.string().optional(),
+  clientOrderId: z.string().optional(),
 });
 
 const addLineSchema = z.object({
@@ -33,6 +51,19 @@ const applyDiscountSchema = z.object({
 const cancelOrderSchema = z.object({
   reason: z.string().min(1),
 });
+
+const lockOrderSchema = z.object({
+  ttlSeconds: z.number().int().min(30).max(900).optional(),
+});
+
+function getIdempotencyKey(request: FastifyRequest): string | undefined {
+  const value = request.headers['x-idempotency-key'];
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
 
 // Helper function to recalculate order totals
 function recalculateOrderTotals(orderId: string) {
@@ -67,6 +98,7 @@ function recalculateOrderTotals(orderId: string) {
       subtotal: Math.round(subtotal * 100) / 100,
       taxTotal: Math.round(taxTotal * 100) / 100,
       grandTotal: Math.max(0, Math.round(grandTotal * 100) / 100),
+      updatedAt: new Date(),
     })
     .where(eq(orders.id, orderId))
     .run();
@@ -81,7 +113,23 @@ export default async function ordersRoutes(fastify: FastifyInstance) {
   // Create new order
   fastify.post('/', async (request: FastifyRequest, reply: FastifyReply) => {
     try {
+      const deviceId = touchDeviceSession(request);
+      const idempotencyKey = getIdempotencyKey(request);
+      const cachedResponse = getCachedIdempotencyResponse(idempotencyKey, 'orders:create', request.user!.userId);
+      if (cachedResponse) {
+        return cachedResponse;
+      }
+
       const body = createOrderSchema.parse(request.body);
+      const requestedOrderId = body.clientOrderId?.trim() || null;
+
+      if (requestedOrderId) {
+        const existingOrder = db.select().from(orders).where(eq(orders.id, requestedOrderId)).get();
+        if (existingOrder) {
+          storeIdempotencyResponse(idempotencyKey, 'orders:create', request.user!.userId, existingOrder);
+          return existingOrder;
+        }
+      }
 
       if (body.orderType === 'dine-in' && !body.tableId) {
         return reply.status(400).send({ error: 'Table ID is required for dine-in orders' });
@@ -93,12 +141,12 @@ export default async function ordersRoutes(fastify: FastifyInstance) {
         if (!table) {
           return reply.status(404).send({ error: 'Table not found' });
         }
-        if (table.currentOrderId) {
+        if (table.currentOrderId && table.currentOrderId !== requestedOrderId) {
           return reply.status(400).send({ error: 'Table is already occupied' });
         }
       }
 
-      const orderId = generateId();
+      const orderId = requestedOrderId || generateId();
       const orderNumber = generateOrderNumber();
       const now = new Date();
 
@@ -107,13 +155,16 @@ export default async function ordersRoutes(fastify: FastifyInstance) {
         orderNumber,
         orderType: body.orderType,
         tableId: body.tableId || null,
+        ownerUserId: request.user!.userId,
         status: 'open',
+        version: 1,
         subtotal: 0,
         taxTotal: 0,
         grandTotal: 0,
         paymentStatus: 'pending',
         createdBy: request.user!.userId,
         createdAt: now,
+        updatedAt: now,
       }).run();
 
       // Update table with current order
@@ -123,17 +174,61 @@ export default async function ordersRoutes(fastify: FastifyInstance) {
           .where(eq(tables.id, body.tableId))
           .run();
 
+        acquireOrderLock(orderId, deviceId, 120);
+
         const table = db.select().from(tables).where(eq(tables.id, body.tableId)).get();
         if (table) {
           emitTableUpdated({
             id: table.id,
             name: table.name,
             currentOrderId: orderId,
+            version: table.version,
+            lockOwnerDeviceId: table.lockOwnerDeviceId,
+            lockExpiresAt: table.lockExpiresAt,
+            sourceDeviceId: deviceId,
+            serverTime: now.toISOString(),
+          });
+
+          recordDomainEvent({
+            entityType: 'table',
+            entityId: table.id,
+            eventType: 'table.updated',
+            payload: {
+              id: table.id,
+              currentOrderId: table.currentOrderId,
+              lockOwnerDeviceId: table.lockOwnerDeviceId,
+              lockExpiresAt: table.lockExpiresAt,
+              version: table.version,
+            },
+            sourceDeviceId: deviceId,
+            actorUserId: request.user!.userId,
           });
         }
       }
 
       const order = db.select().from(orders).where(eq(orders.id, orderId)).get();
+      if (order) {
+        emitOrderCreated({
+          id: order.id,
+          orderNumber: order.orderNumber,
+          status: order.status,
+          subtotal: order.subtotal,
+          taxTotal: order.taxTotal,
+          grandTotal: order.grandTotal,
+          version: order.version,
+          sourceDeviceId: deviceId,
+          serverTime: now.toISOString(),
+        });
+        recordDomainEvent({
+          entityType: 'order',
+          entityId: order.id,
+          eventType: 'order.created',
+          payload: order,
+          sourceDeviceId: deviceId,
+          actorUserId: request.user!.userId,
+        });
+      }
+      storeIdempotencyResponse(idempotencyKey, 'orders:create', request.user!.userId, order);
 
       return reply.status(201).send(order);
     } catch (error) {
@@ -144,6 +239,71 @@ export default async function ordersRoutes(fastify: FastifyInstance) {
     }
   });
 
+  // Acquire or renew order lock
+  fastify.post('/:id/lock', async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const { id } = request.params as { id: string };
+      const body = lockOrderSchema.parse(request.body ?? {});
+      const deviceId = touchDeviceSession(request);
+      const lockResult = acquireOrderLock(id, deviceId, body.ttlSeconds ?? 120);
+
+      if (!lockResult.success) {
+        return reply.status(409).send({
+          error: lockResult.reason || 'Unable to acquire lock',
+          lockOwner: lockResult.lockOwner || null,
+          lockExpiresAt: lockResult.lockExpiresAt || null,
+        });
+      }
+
+      const order = db.select().from(orders).where(eq(orders.id, id)).get();
+      const response = {
+        success: true,
+        orderId: id,
+        tableId: order?.tableId || null,
+        lockOwner: lockResult.lockOwner || deviceId,
+        lockExpiresAt: lockResult.lockExpiresAt || null,
+      };
+
+      recordDomainEvent({
+        entityType: 'order',
+        entityId: id,
+        eventType: 'order.locked',
+        payload: response,
+        sourceDeviceId: deviceId,
+        actorUserId: request.user!.userId,
+      });
+
+      return response;
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return reply.status(400).send({ error: 'Validation failed', details: error.errors });
+      }
+      throw error;
+    }
+  });
+
+  // Release order lock
+  fastify.delete('/:id/lock', async (request: FastifyRequest, reply: FastifyReply) => {
+    const { id } = request.params as { id: string };
+    const deviceId = touchDeviceSession(request);
+    const force = request.user!.role === 'owner' || request.user!.role === 'manager';
+    const result = releaseOrderLock(id, deviceId, force);
+    if (!result.success) {
+      return reply.status(409).send({ error: result.reason || 'Unable to release lock' });
+    }
+
+    recordDomainEvent({
+      entityType: 'order',
+      entityId: id,
+      eventType: 'order.unlocked',
+      payload: { orderId: id },
+      sourceDeviceId: deviceId,
+      actorUserId: request.user!.userId,
+    });
+
+    return { success: true, orderId: id };
+  });
+
   // List orders
   fastify.get('/', async (request: FastifyRequest, reply: FastifyReply) => {
     const query = request.query as {
@@ -151,8 +311,6 @@ export default async function ordersRoutes(fastify: FastifyInstance) {
       date?: string;
       limit?: string;
     };
-
-    let ordersQuery = db.select().from(orders);
 
     const conditions: ReturnType<typeof eq>[] = [];
 
@@ -280,8 +438,25 @@ export default async function ordersRoutes(fastify: FastifyInstance) {
   // Add line to order
   fastify.post('/:id/lines', async (request: FastifyRequest, reply: FastifyReply) => {
     try {
+      const deviceId = touchDeviceSession(request);
+      const idempotencyKey = getIdempotencyKey(request);
+      const cacheKey = `orders:add-line:${(request.params as { id: string }).id}`;
+      const cachedResponse = getCachedIdempotencyResponse(idempotencyKey, cacheKey, request.user!.userId);
+      if (cachedResponse) {
+        return cachedResponse;
+      }
+
       const { id } = request.params as { id: string };
       const body = addLineSchema.parse(request.body);
+
+      const lockState = validateOrderLock(id, deviceId);
+      if (!lockState.allowed) {
+        return reply.status(409).send({
+          error: lockState.reason || 'Order is locked',
+          lockOwner: lockState.lockOwner || null,
+          lockExpiresAt: lockState.lockExpiresAt || null,
+        });
+      }
 
       const order = db.select().from(orders).where(eq(orders.id, id)).get();
       if (!order) {
@@ -312,11 +487,13 @@ export default async function ordersRoutes(fastify: FastifyInstance) {
         lineTotal,
         notes: body.notes || null,
         kotSent: false,
+        version: 1,
         createdAt: now,
         updatedAt: now,
       }).run();
 
       recalculateOrderTotals(id);
+      const version = incrementOrderVersion(id);
 
       const updatedOrder = db.select().from(orders).where(eq(orders.id, id)).get();
       if (updatedOrder) {
@@ -327,16 +504,39 @@ export default async function ordersRoutes(fastify: FastifyInstance) {
           subtotal: updatedOrder.subtotal,
           taxTotal: updatedOrder.taxTotal,
           grandTotal: updatedOrder.grandTotal,
+          version,
+          sourceDeviceId: deviceId,
+          serverTime: now.toISOString(),
         });
       }
 
       const line = db.select().from(orderLines).where(eq(orderLines.id, lineId)).get();
-
-      return reply.status(201).send({
+      const response = {
         ...line,
         menuItemName: menuItem.name,
         isVeg: menuItem.isVeg,
+      };
+
+      emitOrderLineChanged('order.line.added', {
+        orderId: id,
+        lineId,
+        version,
+        sourceDeviceId: deviceId,
+        serverTime: now.toISOString(),
       });
+
+      recordDomainEvent({
+        entityType: 'order',
+        entityId: id,
+        eventType: 'order.line.added',
+        payload: response,
+        sourceDeviceId: deviceId,
+        actorUserId: request.user!.userId,
+      });
+
+      storeIdempotencyResponse(idempotencyKey, cacheKey, request.user!.userId, response);
+
+      return reply.status(201).send(response);
     } catch (error) {
       if (error instanceof z.ZodError) {
         return reply.status(400).send({ error: 'Validation failed', details: error.errors });
@@ -348,8 +548,18 @@ export default async function ordersRoutes(fastify: FastifyInstance) {
   // Update line quantity
   fastify.patch('/:id/lines/:lineId', async (request: FastifyRequest, reply: FastifyReply) => {
     try {
+      const deviceId = touchDeviceSession(request);
       const { id, lineId } = request.params as { id: string; lineId: string };
       const body = updateLineSchema.parse(request.body);
+
+      const lockState = validateOrderLock(id, deviceId);
+      if (!lockState.allowed) {
+        return reply.status(409).send({
+          error: lockState.reason || 'Order is locked',
+          lockOwner: lockState.lockOwner || null,
+          lockExpiresAt: lockState.lockExpiresAt || null,
+        });
+      }
 
       const order = db.select().from(orders).where(eq(orders.id, id)).get();
       if (!order || order.status !== 'open') {
@@ -368,14 +578,45 @@ export default async function ordersRoutes(fastify: FastifyInstance) {
           qty: body.qty,
           lineTotal,
           notes: body.notes !== undefined ? body.notes : line.notes,
+          version: (line.version ?? 1) + 1,
           updatedAt: new Date(),
         })
         .where(eq(orderLines.id, lineId))
         .run();
 
       recalculateOrderTotals(id);
+      const version = incrementOrderVersion(id);
 
       const updatedLine = db.select().from(orderLines).where(eq(orderLines.id, lineId)).get();
+      const updatedOrder = db.select().from(orders).where(eq(orders.id, id)).get();
+      if (updatedOrder) {
+        emitOrderUpdated({
+          id: updatedOrder.id,
+          orderNumber: updatedOrder.orderNumber,
+          status: updatedOrder.status,
+          subtotal: updatedOrder.subtotal,
+          taxTotal: updatedOrder.taxTotal,
+          grandTotal: updatedOrder.grandTotal,
+          version,
+          sourceDeviceId: deviceId,
+          serverTime: new Date().toISOString(),
+        });
+      }
+      emitOrderLineChanged('order.line.updated', {
+        orderId: id,
+        lineId,
+        version,
+        sourceDeviceId: deviceId,
+        serverTime: new Date().toISOString(),
+      });
+      recordDomainEvent({
+        entityType: 'order',
+        entityId: id,
+        eventType: 'order.line.updated',
+        payload: updatedLine,
+        sourceDeviceId: deviceId,
+        actorUserId: request.user!.userId,
+      });
 
       return updatedLine;
     } catch (error) {
@@ -388,7 +629,17 @@ export default async function ordersRoutes(fastify: FastifyInstance) {
 
   // Remove line from order
   fastify.delete('/:id/lines/:lineId', async (request: FastifyRequest, reply: FastifyReply) => {
+    const deviceId = touchDeviceSession(request);
     const { id, lineId } = request.params as { id: string; lineId: string };
+
+    const lockState = validateOrderLock(id, deviceId);
+    if (!lockState.allowed) {
+      return reply.status(409).send({
+        error: lockState.reason || 'Order is locked',
+        lockOwner: lockState.lockOwner || null,
+        lockExpiresAt: lockState.lockExpiresAt || null,
+      });
+    }
 
     const order = db.select().from(orders).where(eq(orders.id, id)).get();
     if (!order || order.status !== 'open') {
@@ -407,13 +658,60 @@ export default async function ordersRoutes(fastify: FastifyInstance) {
     db.delete(orderLines).where(eq(orderLines.id, lineId)).run();
 
     recalculateOrderTotals(id);
+    const version = incrementOrderVersion(id);
+    const updatedOrder = db.select().from(orders).where(eq(orders.id, id)).get();
+    if (updatedOrder) {
+      emitOrderUpdated({
+        id: updatedOrder.id,
+        orderNumber: updatedOrder.orderNumber,
+        status: updatedOrder.status,
+        subtotal: updatedOrder.subtotal,
+        taxTotal: updatedOrder.taxTotal,
+        grandTotal: updatedOrder.grandTotal,
+        version,
+        sourceDeviceId: deviceId,
+        serverTime: new Date().toISOString(),
+      });
+    }
+
+    emitOrderLineChanged('order.line.removed', {
+      orderId: id,
+      lineId,
+      version,
+      sourceDeviceId: deviceId,
+      serverTime: new Date().toISOString(),
+    });
+    recordDomainEvent({
+      entityType: 'order',
+      entityId: id,
+      eventType: 'order.line.removed',
+      payload: { orderId: id, lineId, version },
+      sourceDeviceId: deviceId,
+      actorUserId: request.user!.userId,
+    });
 
     return { success: true };
   });
 
   // Send KOT to kitchen
   fastify.post('/:id/kots', async (request: FastifyRequest, reply: FastifyReply) => {
+    const deviceId = touchDeviceSession(request);
     const { id } = request.params as { id: string };
+    const idempotencyKey = getIdempotencyKey(request);
+    const cacheKey = `orders:create-kot:${id}`;
+    const cachedResponse = getCachedIdempotencyResponse(idempotencyKey, cacheKey, request.user!.userId);
+    if (cachedResponse) {
+      return cachedResponse;
+    }
+
+    const lockState = validateOrderLock(id, deviceId);
+    if (!lockState.allowed) {
+      return reply.status(409).send({
+        error: lockState.reason || 'Order is locked',
+        lockOwner: lockState.lockOwner || null,
+        lockExpiresAt: lockState.lockExpiresAt || null,
+      });
+    }
 
     const order = db.select().from(orders).where(eq(orders.id, id)).get();
     if (!order) {
@@ -484,6 +782,8 @@ export default async function ordersRoutes(fastify: FastifyInstance) {
       kotNumber,
       tableName: table?.name || null,
       orderType: order.orderType,
+      sourceDeviceId: deviceId,
+      serverTime: now.toISOString(),
       lines: unsent.map(l => ({
         id: l.id,
         menuItemName: l.menuItemName || 'Unknown',
@@ -495,12 +795,30 @@ export default async function ordersRoutes(fastify: FastifyInstance) {
 
     const kot = db.select().from(kots).where(eq(kots.id, kotId)).get();
     const kotLinesList = db.select().from(kotLines).where(eq(kotLines.kotId, kotId)).all();
+    const version = incrementOrderVersion(id);
 
-    return reply.status(201).send({
+    recordDomainEvent({
+      entityType: 'kot',
+      entityId: kotId,
+      eventType: 'kot.created',
+      payload: {
+        ...kot,
+        lines: kotLinesList,
+        orderId: id,
+      },
+      sourceDeviceId: deviceId,
+      actorUserId: request.user!.userId,
+    });
+
+    const response = {
       ...kot,
       lines: kotLinesList,
       tableName: table?.name,
-    });
+      orderVersion: version,
+    };
+    storeIdempotencyResponse(idempotencyKey, cacheKey, request.user!.userId, response);
+
+    return reply.status(201).send(response);
   });
 
   // Apply discount
@@ -509,8 +827,18 @@ export default async function ordersRoutes(fastify: FastifyInstance) {
     { preHandler: [requireRole('owner', 'manager', 'cashier')] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
+        const deviceId = touchDeviceSession(request);
         const { id } = request.params as { id: string };
         const body = applyDiscountSchema.parse(request.body);
+
+        const lockState = validateOrderLock(id, deviceId);
+        if (!lockState.allowed) {
+          return reply.status(409).send({
+            error: lockState.reason || 'Order is locked',
+            lockOwner: lockState.lockOwner || null,
+            lockExpiresAt: lockState.lockExpiresAt || null,
+          });
+        }
 
         const order = db.select().from(orders).where(eq(orders.id, id)).get();
         if (!order) {
@@ -543,8 +871,30 @@ export default async function ordersRoutes(fastify: FastifyInstance) {
           .run();
 
         recalculateOrderTotals(id);
+        const version = incrementOrderVersion(id);
 
         const updatedOrder = db.select().from(orders).where(eq(orders.id, id)).get();
+        if (updatedOrder) {
+          emitOrderUpdated({
+            id: updatedOrder.id,
+            orderNumber: updatedOrder.orderNumber,
+            status: updatedOrder.status,
+            subtotal: updatedOrder.subtotal,
+            taxTotal: updatedOrder.taxTotal,
+            grandTotal: updatedOrder.grandTotal,
+            version,
+            sourceDeviceId: deviceId,
+            serverTime: new Date().toISOString(),
+          });
+          recordDomainEvent({
+            entityType: 'order',
+            entityId: updatedOrder.id,
+            eventType: 'order.updated',
+            payload: updatedOrder,
+            sourceDeviceId: deviceId,
+            actorUserId: request.user!.userId,
+          });
+        }
 
         return updatedOrder;
       } catch (error) {
@@ -558,7 +908,17 @@ export default async function ordersRoutes(fastify: FastifyInstance) {
 
   // Remove discount
   fastify.delete('/:id/discount', async (request: FastifyRequest, reply: FastifyReply) => {
+    const deviceId = touchDeviceSession(request);
     const { id } = request.params as { id: string };
+
+    const lockState = validateOrderLock(id, deviceId);
+    if (!lockState.allowed) {
+      return reply.status(409).send({
+        error: lockState.reason || 'Order is locked',
+        lockOwner: lockState.lockOwner || null,
+        lockExpiresAt: lockState.lockExpiresAt || null,
+      });
+    }
 
     const order = db.select().from(orders).where(eq(orders.id, id)).get();
     if (!order) {
@@ -575,15 +935,47 @@ export default async function ordersRoutes(fastify: FastifyInstance) {
       .run();
 
     recalculateOrderTotals(id);
+    const version = incrementOrderVersion(id);
 
     const updatedOrder = db.select().from(orders).where(eq(orders.id, id)).get();
+    if (updatedOrder) {
+      emitOrderUpdated({
+        id: updatedOrder.id,
+        orderNumber: updatedOrder.orderNumber,
+        status: updatedOrder.status,
+        subtotal: updatedOrder.subtotal,
+        taxTotal: updatedOrder.taxTotal,
+        grandTotal: updatedOrder.grandTotal,
+        version,
+        sourceDeviceId: deviceId,
+        serverTime: new Date().toISOString(),
+      });
+      recordDomainEvent({
+        entityType: 'order',
+        entityId: updatedOrder.id,
+        eventType: 'order.updated',
+        payload: updatedOrder,
+        sourceDeviceId: deviceId,
+        actorUserId: request.user!.userId,
+      });
+    }
 
     return updatedOrder;
   });
 
   // Generate bill (change status to billed)
   fastify.post('/:id/bill', async (request: FastifyRequest, reply: FastifyReply) => {
+    const deviceId = touchDeviceSession(request);
     const { id } = request.params as { id: string };
+
+    const lockState = validateOrderLock(id, deviceId);
+    if (!lockState.allowed) {
+      return reply.status(409).send({
+        error: lockState.reason || 'Order is locked',
+        lockOwner: lockState.lockOwner || null,
+        lockExpiresAt: lockState.lockExpiresAt || null,
+      });
+    }
 
     const order = db.select().from(orders).where(eq(orders.id, id)).get();
     if (!order) {
@@ -595,11 +987,33 @@ export default async function ordersRoutes(fastify: FastifyInstance) {
     }
 
     db.update(orders)
-      .set({ status: 'billed' })
+      .set({ status: 'billed', updatedAt: new Date() })
       .where(eq(orders.id, id))
       .run();
+    const version = incrementOrderVersion(id);
 
     const updatedOrder = db.select().from(orders).where(eq(orders.id, id)).get();
+    if (updatedOrder) {
+      emitOrderUpdated({
+        id: updatedOrder.id,
+        orderNumber: updatedOrder.orderNumber,
+        status: updatedOrder.status,
+        subtotal: updatedOrder.subtotal,
+        taxTotal: updatedOrder.taxTotal,
+        grandTotal: updatedOrder.grandTotal,
+        version,
+        sourceDeviceId: deviceId,
+        serverTime: new Date().toISOString(),
+      });
+      recordDomainEvent({
+        entityType: 'order',
+        entityId: updatedOrder.id,
+        eventType: 'order.updated',
+        payload: updatedOrder,
+        sourceDeviceId: deviceId,
+        actorUserId: request.user!.userId,
+      });
+    }
 
     return updatedOrder;
   });
@@ -609,7 +1023,15 @@ export default async function ordersRoutes(fastify: FastifyInstance) {
     '/:id/payments',
     { preHandler: [requireRole('owner', 'manager', 'cashier')] },
     async (request: FastifyRequest, reply: FastifyReply) => {
+      const deviceId = touchDeviceSession(request);
       const { id } = request.params as { id: string };
+      const idempotencyKey = getIdempotencyKey(request);
+      const cacheKey = `orders:add-payment:${id}`;
+      const cachedResponse = getCachedIdempotencyResponse(idempotencyKey, cacheKey, request.user!.userId);
+      if (cachedResponse) {
+        return cachedResponse;
+      }
+
       const body = z.object({
         method: z.enum(['cash', 'upi', 'card']),
         amount: z.number().positive(),
@@ -653,7 +1075,7 @@ export default async function ordersRoutes(fastify: FastifyInstance) {
         // Free up the table
         if (order.tableId) {
           db.update(tables)
-            .set({ currentOrderId: null, updatedAt: now })
+            .set({ currentOrderId: null, lockOwnerDeviceId: null, lockExpiresAt: null, updatedAt: now })
             .where(eq(tables.id, order.tableId))
             .run();
 
@@ -663,6 +1085,11 @@ export default async function ordersRoutes(fastify: FastifyInstance) {
               id: table.id,
               name: table.name,
               currentOrderId: null,
+              version: table.version,
+              lockOwnerDeviceId: table.lockOwnerDeviceId,
+              lockExpiresAt: table.lockExpiresAt,
+              sourceDeviceId: deviceId,
+              serverTime: now.toISOString(),
             });
           }
         }
@@ -674,20 +1101,51 @@ export default async function ordersRoutes(fastify: FastifyInstance) {
         .set({
           status: newStatus,
           paymentStatus,
+          updatedAt: now,
           closedAt: newStatus === 'paid' ? now : null,
         })
         .where(eq(orders.id, id))
         .run();
+      const version = incrementOrderVersion(id);
 
       const payment = db.select().from(payments).where(eq(payments.id, paymentId)).get();
       const updatedOrder = db.select().from(orders).where(eq(orders.id, id)).get();
+      if (updatedOrder) {
+        const eventPayload = {
+          id: updatedOrder.id,
+          orderNumber: updatedOrder.orderNumber,
+          status: updatedOrder.status,
+          subtotal: updatedOrder.subtotal,
+          taxTotal: updatedOrder.taxTotal,
+          grandTotal: updatedOrder.grandTotal,
+          version,
+          sourceDeviceId: deviceId,
+          serverTime: now.toISOString(),
+        };
+        emitOrderUpdated(eventPayload);
+        if (updatedOrder.status === 'paid') {
+          emitOrderClosed(eventPayload);
+        }
+      }
 
-      return {
+      const response = {
         payment,
         order: updatedOrder,
         totalPaid,
         remaining: Math.max(0, order.grandTotal - totalPaid),
       };
+
+      recordDomainEvent({
+        entityType: 'order',
+        entityId: id,
+        eventType: newStatus === 'paid' ? 'order.closed' : 'order.updated',
+        payload: response,
+        sourceDeviceId: deviceId,
+        actorUserId: request.user!.userId,
+      });
+      storeIdempotencyResponse(idempotencyKey, cacheKey, request.user!.userId, response);
+
+      return response;
     }
   );
 
@@ -697,6 +1155,7 @@ export default async function ordersRoutes(fastify: FastifyInstance) {
     { preHandler: [requireRole('owner', 'manager')] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
+        const deviceId = touchDeviceSession(request);
         const { id } = request.params as { id: string };
         const body = cancelOrderSchema.parse(request.body);
 
@@ -714,6 +1173,7 @@ export default async function ordersRoutes(fastify: FastifyInstance) {
         db.update(orders)
           .set({
             status: 'cancelled',
+            updatedAt: now,
             cancelledAt: now,
             cancelReason: body.reason,
           })
@@ -723,7 +1183,7 @@ export default async function ordersRoutes(fastify: FastifyInstance) {
         // Free up the table
         if (order.tableId) {
           db.update(tables)
-            .set({ currentOrderId: null, updatedAt: now })
+            .set({ currentOrderId: null, lockOwnerDeviceId: null, lockExpiresAt: null, updatedAt: now })
             .where(eq(tables.id, order.tableId))
             .run();
 
@@ -733,11 +1193,38 @@ export default async function ordersRoutes(fastify: FastifyInstance) {
               id: table.id,
               name: table.name,
               currentOrderId: null,
+              version: table.version,
+              lockOwnerDeviceId: table.lockOwnerDeviceId,
+              lockExpiresAt: table.lockExpiresAt,
+              sourceDeviceId: deviceId,
+              serverTime: now.toISOString(),
             });
           }
         }
+        const version = incrementOrderVersion(id);
 
         const updatedOrder = db.select().from(orders).where(eq(orders.id, id)).get();
+        if (updatedOrder) {
+          emitOrderClosed({
+            id: updatedOrder.id,
+            orderNumber: updatedOrder.orderNumber,
+            status: updatedOrder.status,
+            subtotal: updatedOrder.subtotal,
+            taxTotal: updatedOrder.taxTotal,
+            grandTotal: updatedOrder.grandTotal,
+            version,
+            sourceDeviceId: deviceId,
+            serverTime: now.toISOString(),
+          });
+          recordDomainEvent({
+            entityType: 'order',
+            entityId: updatedOrder.id,
+            eventType: 'order.closed',
+            payload: updatedOrder,
+            sourceDeviceId: deviceId,
+            actorUserId: request.user!.userId,
+          });
+        }
 
         return updatedOrder;
       } catch (error) {

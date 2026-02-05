@@ -5,11 +5,12 @@ export interface JWTPayload {
   email: string;
   role: 'owner' | 'manager' | 'cashier' | 'kitchen';
   name: string;
+  deviceId?: string;
 }
 
 declare module 'fastify' {
   interface FastifyRequest {
-    user?: JWTPayload;
+    user: JWTPayload;
   }
 }
 

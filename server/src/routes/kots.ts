@@ -5,6 +5,7 @@ import { kots, kotLines, orders, tables } from '../db/schema.js';
 import { eq, and, ne, desc } from 'drizzle-orm';
 import { authMiddleware } from '../middleware/auth.js';
 import { emitKOTUpdated } from '../socket/index.js';
+import { recordDomainEvent, resolveDeviceId, touchDeviceSession } from '../services/sync.service.js';
 
 const updateStatusSchema = z.object({
   status: z.enum(['new', 'preparing', 'ready']),
@@ -112,6 +113,8 @@ export default async function kotsRoutes(fastify: FastifyInstance) {
   // Update KOT status
   fastify.patch('/:id', async (request: FastifyRequest, reply: FastifyReply) => {
     try {
+      touchDeviceSession(request);
+      const deviceId = resolveDeviceId(request);
       const { id } = request.params as { id: string };
       const body = updateStatusSchema.parse(request.body);
 
@@ -135,6 +138,8 @@ export default async function kotsRoutes(fastify: FastifyInstance) {
       emitKOTUpdated({
         id,
         status: body.status,
+        sourceDeviceId: deviceId,
+        serverTime: now.toISOString(),
         updatedAt: now,
       });
 
@@ -145,6 +150,15 @@ export default async function kotsRoutes(fastify: FastifyInstance) {
       const table = order?.tableId
         ? db.select().from(tables).where(eq(tables.id, order.tableId)).get()
         : null;
+
+      recordDomainEvent({
+        entityType: 'kot',
+        entityId: id,
+        eventType: 'kot.updated',
+        payload: { status: body.status, updatedAt: now.toISOString() },
+        sourceDeviceId: deviceId,
+        actorUserId: request.user!.userId,
+      });
 
       return {
         ...updatedKot,
@@ -164,6 +178,8 @@ export default async function kotsRoutes(fastify: FastifyInstance) {
   // Update KOT status (alternative endpoint)
   fastify.patch('/:id/status', async (request: FastifyRequest, reply: FastifyReply) => {
     try {
+      touchDeviceSession(request);
+      const deviceId = resolveDeviceId(request);
       const { id } = request.params as { id: string };
       const body = updateStatusSchema.parse(request.body);
 
@@ -187,10 +203,21 @@ export default async function kotsRoutes(fastify: FastifyInstance) {
       emitKOTUpdated({
         id,
         status: body.status,
+        sourceDeviceId: deviceId,
+        serverTime: now.toISOString(),
         updatedAt: now,
       });
 
       const updatedKot = db.select().from(kots).where(eq(kots.id, id)).get();
+
+      recordDomainEvent({
+        entityType: 'kot',
+        entityId: id,
+        eventType: 'kot.updated',
+        payload: updatedKot,
+        sourceDeviceId: deviceId,
+        actorUserId: request.user!.userId,
+      });
 
       return updatedKot;
     } catch (error) {

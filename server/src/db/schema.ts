@@ -44,6 +44,9 @@ export const tables = sqliteTable('tables', {
   capacity: integer('capacity').default(4),
   isActive: integer('is_active', { mode: 'boolean' }).notNull().default(true),
   currentOrderId: text('current_order_id'),
+  lockOwnerDeviceId: text('lock_owner_device_id'),
+  lockExpiresAt: integer('lock_expires_at', { mode: 'timestamp' }),
+  version: integer('version').notNull().default(1),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
 });
@@ -99,7 +102,9 @@ export const orders = sqliteTable('orders', {
   orderNumber: text('order_number').notNull().unique(),
   orderType: text('order_type', { enum: ['dine-in', 'takeaway'] }).notNull(),
   tableId: text('table_id').references(() => tables.id),
+  ownerUserId: text('owner_user_id').references(() => users.id),
   status: text('status', { enum: ['open', 'billed', 'paid', 'cancelled'] }).notNull().default('open'),
+  version: integer('version').notNull().default(1),
   subtotal: real('subtotal').notNull().default(0),
   discountType: text('discount_type', { enum: ['percentage', 'flat'] }),
   discountValue: real('discount_value'),
@@ -109,6 +114,7 @@ export const orders = sqliteTable('orders', {
   paymentStatus: text('payment_status', { enum: ['pending', 'partial', 'paid'] }).notNull().default('pending'),
   createdBy: text('created_by').notNull().references(() => users.id),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
   closedAt: integer('closed_at', { mode: 'timestamp' }),
   cancelledAt: integer('cancelled_at', { mode: 'timestamp' }),
   cancelReason: text('cancel_reason'),
@@ -139,6 +145,7 @@ export const orderLines = sqliteTable('order_lines', {
   lineTotal: real('line_total').notNull(),
   notes: text('notes'),
   kotSent: integer('kot_sent', { mode: 'boolean' }).notNull().default(false),
+  version: integer('version').notNull().default(1),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
 });
@@ -305,6 +312,59 @@ export const sequences = sqliteTable('sequences', {
   lastResetDate: text('last_reset_date'),
 });
 
+// ============== DEVICE SESSIONS ==============
+export const deviceSessions = sqliteTable('device_sessions', {
+  deviceId: text('device_id').primaryKey(),
+  userId: text('user_id').notNull().references(() => users.id),
+  appVersion: text('app_version'),
+  lastSeenAt: integer('last_seen_at', { mode: 'timestamp' }).notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+});
+
+// ============== IDEMPOTENCY KEYS ==============
+export const idempotencyKeys = sqliteTable('idempotency_keys', {
+  key: text('key').primaryKey(),
+  endpoint: text('endpoint').notNull(),
+  actorUserId: text('actor_user_id').notNull().references(() => users.id),
+  responseJson: text('response_json').notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+});
+
+// ============== SYNC ACTIONS ==============
+export const syncActions = sqliteTable('sync_actions', {
+  actionId: text('action_id').primaryKey(),
+  deviceId: text('device_id').notNull(),
+  actorUserId: text('actor_user_id').notNull().references(() => users.id),
+  type: text('type').notNull(),
+  payloadJson: text('payload_json').notNull(),
+  baseVersion: integer('base_version'),
+  status: text('status', { enum: ['pending', 'processed', 'conflict', 'failed'] }).notNull().default('pending'),
+  resultJson: text('result_json'),
+  errorCode: text('error_code'),
+  errorMessage: text('error_message'),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  processedAt: integer('processed_at', { mode: 'timestamp' }),
+});
+
+// ============== SYNC CURSORS ==============
+export const syncCursors = sqliteTable('sync_cursors', {
+  deviceId: text('device_id').primaryKey(),
+  lastEventSeq: integer('last_event_seq').notNull().default(0),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
+});
+
+// ============== DOMAIN EVENTS ==============
+export const domainEvents = sqliteTable('domain_events', {
+  seq: integer('seq').primaryKey({ autoIncrement: true }),
+  entityType: text('entity_type').notNull(),
+  entityId: text('entity_id').notNull(),
+  eventType: text('event_type').notNull(),
+  payloadJson: text('payload_json').notNull(),
+  sourceDeviceId: text('source_device_id'),
+  actorUserId: text('actor_user_id').references(() => users.id),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+});
+
 // Type exports for use in the app
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
@@ -334,3 +394,8 @@ export type AuditEvent = typeof auditEvents.$inferSelect;
 export type NewAuditEvent = typeof auditEvents.$inferInsert;
 export type Settings = typeof settings.$inferSelect;
 export type Sequence = typeof sequences.$inferSelect;
+export type DeviceSession = typeof deviceSessions.$inferSelect;
+export type IdempotencyKey = typeof idempotencyKeys.$inferSelect;
+export type SyncAction = typeof syncActions.$inferSelect;
+export type SyncCursor = typeof syncCursors.$inferSelect;
+export type DomainEvent = typeof domainEvents.$inferSelect;

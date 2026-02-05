@@ -1,19 +1,32 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate, Navigate } from 'react-router-dom';
-import { UtensilsCrossed, Loader2, Delete } from 'lucide-react';
+import { UtensilsCrossed, Loader2, Delete, Wifi } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
 import { Haptics, ImpactStyle } from '@capacitor/haptics';
 import { L } from '@/lib/labels';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { resolveApiBaseUrl, updateApiBaseUrl } from '@/lib/api/client';
 
 export default function LoginPage() {
   const [pin, setPin] = useState('');
   const [loading, setLoading] = useState(false);
+  const [showServerDialog, setShowServerDialog] = useState(false);
+  const [serverUrl, setServerUrl] = useState('');
+  const [checkingServer, setCheckingServer] = useState(false);
   const { user, pinLogin } = useAuth();
   const navigate = useNavigate();
   const { toast } = useToast();
+
+  useEffect(() => {
+    resolveApiBaseUrl()
+      .then(setServerUrl)
+      .catch(() => {});
+  }, []);
 
   // Phase 2.4: Prevent /login access while logged in
   if (user) {
@@ -27,12 +40,16 @@ export default function LoginPage() {
       if (success) {
         try {
           await Haptics.impact({ style: ImpactStyle.Medium });
-        } catch (e) {}
+        } catch (error) {
+          void error;
+        }
         navigate('/pos');
       } else {
         try {
           await Haptics.impact({ style: ImpactStyle.Heavy });
-        } catch (e) {}
+        } catch (error) {
+          void error;
+        }
         toast({
           title: L.loginFailed,
           description: L.invalidPin,
@@ -55,7 +72,9 @@ export default function LoginPage() {
   const handlePinInput = async (digit: string) => {
     try {
       await Haptics.impact({ style: ImpactStyle.Light });
-    } catch (e) {}
+    } catch (error) {
+      void error;
+    }
 
     if (pin.length < 4) {
       const newPin = pin + digit;
@@ -71,15 +90,40 @@ export default function LoginPage() {
   const handleBackspace = async () => {
     try {
       await Haptics.impact({ style: ImpactStyle.Light });
-    } catch (e) {}
+    } catch (error) {
+      void error;
+    }
     setPin(pin.slice(0, -1));
   };
 
   const handleClear = async () => {
     try {
       await Haptics.impact({ style: ImpactStyle.Light });
-    } catch (e) {}
+    } catch (error) {
+      void error;
+    }
     setPin('');
+  };
+
+  const handleSaveServerUrl = async () => {
+    setCheckingServer(true);
+    try {
+      const updated = await updateApiBaseUrl(serverUrl);
+      const healthUrl = `${updated || ''}/api/health`;
+      const response = await fetch(healthUrl);
+      if (!response.ok) {
+        throw new Error('Health check failed');
+      }
+      toast({ title: 'Server connected', description: updated || '' });
+      setShowServerDialog(false);
+    } catch {
+      toast({
+        title: 'Server URL saved, but health check failed',
+        variant: 'destructive',
+      });
+    } finally {
+      setCheckingServer(false);
+    }
   };
 
   return (
@@ -90,7 +134,13 @@ export default function LoginPage() {
             <UtensilsCrossed className="h-8 w-8 text-primary" />
           </div>
           <CardTitle className="text-2xl">{L.appName}</CardTitle>
-          <CardDescription>{L.enterPin}</CardDescription>
+          <CardDescription className="flex items-center justify-center gap-2">
+            {L.enterPin}
+            <Button variant="ghost" size="sm" className="h-8 px-2" onClick={() => setShowServerDialog(true)}>
+              <Wifi className="h-4 w-4 mr-1" />
+              Server
+            </Button>
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           {/* PIN Display */}
@@ -159,6 +209,37 @@ export default function LoginPage() {
           )}
         </CardContent>
       </Card>
+
+      <Dialog open={showServerDialog} onOpenChange={setShowServerDialog}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Connect to Server</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-2">
+              <Label>Server Base URL</Label>
+              <Input
+                placeholder="http://192.168.1.20:3001"
+                value={serverUrl}
+                onChange={(e) => setServerUrl(e.target.value)}
+                autoCapitalize="none"
+                autoCorrect="off"
+              />
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Use your cashier/server machine LAN IP.
+            </p>
+            <div className="flex gap-2 justify-end">
+              <Button variant="outline" onClick={() => setShowServerDialog(false)}>
+                Cancel
+              </Button>
+              <Button onClick={handleSaveServerUrl} disabled={checkingServer || serverUrl.trim().length === 0}>
+                {checkingServer ? 'Checking...' : 'Save & Test'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

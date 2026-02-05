@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Store, Users, Receipt, Shield, Plus, Edit2, Trash2, Save, Upload, X } from 'lucide-react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { Store, Users, Receipt, Shield, Plus, Edit2, Trash2, Save, Upload, X, AlertTriangle, Database, Server, RefreshCcw } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -13,15 +13,20 @@ import { useToast } from '@/hooks/use-toast';
 import { User, UserRole } from '@/types';
 import { L } from '@/lib/labels';
 import { useBackHandler } from '@/hooks/use-back-handler';
+import { clearSyncConflict, flushSyncQueue, getSyncConflicts, retrySyncConflict, SyncConflict } from '@/lib/sync/sync-engine';
+import { useAuth } from '@/contexts/AuthContext';
+import { apiRequest, resolveApiBaseUrl, updateApiBaseUrl } from '@/lib/api/client';
 
 const roleLabels: Record<UserRole, string> = {
   owner: 'Owner',
   manager: 'Manager',
   cashier: 'Cashier',
+  kitchen: 'Kitchen',
 };
 
 export default function SettingsPage() {
   const { users, settings, addUser, updateUser, deleteUser, updateSettings } = useSettings();
+  const { user } = useAuth();
   const { toast } = useToast();
 
   const [userDialogOpen, setUserDialogOpen] = useState(false);
@@ -30,6 +35,18 @@ export default function SettingsPage() {
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
   const [localSettings, setLocalSettings] = useState(settings);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [syncConflicts, setSyncConflicts] = useState<SyncConflict[]>([]);
+  const [serverUrl, setServerUrl] = useState('');
+  const [isSavingServer, setIsSavingServer] = useState(false);
+  const [isLoadingBackups, setIsLoadingBackups] = useState(false);
+  const [isCreatingBackup, setIsCreatingBackup] = useState(false);
+  const [restoringFile, setRestoringFile] = useState<string | null>(null);
+  const [backups, setBackups] = useState<Array<{
+    filename: string;
+    size: number;
+    checksum: string;
+    createdAt: string;
+  }>>([]);
   const logoInputRef = useRef<HTMLInputElement>(null);
 
   const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -68,6 +85,43 @@ export default function SettingsPage() {
   useEffect(() => {
     setLocalSettings(settings);
   }, [settings]);
+
+  useEffect(() => {
+    getSyncConflicts().then(setSyncConflicts).catch(() => {});
+  }, []);
+
+  const isOwner = user?.role === 'owner';
+  const canForceUnlock = user?.role === 'owner' || user?.role === 'manager';
+
+  useEffect(() => {
+    resolveApiBaseUrl().then(setServerUrl).catch(() => {});
+  }, []);
+
+  const loadBackups = useCallback(async () => {
+    if (!isOwner) return;
+    setIsLoadingBackups(true);
+    try {
+      const result = await apiRequest<Array<{
+        filename: string;
+        size: number;
+        checksum: string;
+        createdAt: string;
+      }>>('/api/admin/backups');
+      setBackups(result);
+    } catch {
+      setBackups([]);
+    } finally {
+      setIsLoadingBackups(false);
+    }
+  }, [isOwner]);
+
+  useEffect(() => {
+    loadBackups();
+  }, [loadBackups]);
+
+  const refreshConflicts = useCallback(() => {
+    getSyncConflicts().then(setSyncConflicts).catch(() => {});
+  }, []);
 
   const handleAddUser = () => { setEditingUser(null); setUserDialogOpen(true); };
   const handleEditUser = (user: User) => { setEditingUser(user); setUserDialogOpen(true); };
@@ -125,6 +179,91 @@ export default function SettingsPage() {
     if (!validateSettings()) return;
     updateSettings(localSettings);
     toast({ title: L.settingsSaved });
+  };
+
+  const handleRetrySync = async () => {
+    try {
+      await flushSyncQueue();
+      await refreshConflicts();
+      toast({ title: 'Sync retry complete' });
+    } catch {
+      toast({ title: 'Sync retry failed', variant: 'destructive' });
+    }
+  };
+
+  const handleDismissConflict = async (actionId: string) => {
+    await clearSyncConflict(actionId);
+    await refreshConflicts();
+  };
+
+  const handleRetryConflict = async (actionId: string) => {
+    try {
+      await retrySyncConflict(actionId);
+      await flushSyncQueue();
+      await refreshConflicts();
+      toast({ title: 'Conflict queued for retry' });
+    } catch {
+      toast({ title: 'Could not retry conflict', variant: 'destructive' });
+    }
+  };
+
+  const handleForceUnlock = async (orderId: string) => {
+    try {
+      await apiRequest(`/api/orders/${orderId}/lock`, { method: 'DELETE' });
+      toast({ title: 'Order lock released' });
+      await refreshConflicts();
+    } catch {
+      toast({ title: 'Failed to release lock', variant: 'destructive' });
+    }
+  };
+
+  const handleSaveServerUrl = async () => {
+    setIsSavingServer(true);
+    try {
+      const updatedUrl = await updateApiBaseUrl(serverUrl);
+      const health = await fetch(`${updatedUrl}/api/health`);
+      if (!health.ok) {
+        throw new Error('Health check failed');
+      }
+      setServerUrl(updatedUrl || serverUrl);
+      toast({ title: 'Server URL saved' });
+    } catch {
+      toast({ title: 'Server URL saved, but health check failed', variant: 'destructive' });
+    } finally {
+      setIsSavingServer(false);
+    }
+  };
+
+  const handleCreateBackup = async () => {
+    setIsCreatingBackup(true);
+    try {
+      await apiRequest('/api/admin/backups', { method: 'POST' });
+      toast({ title: 'Backup created' });
+      await loadBackups();
+    } catch {
+      toast({ title: 'Backup failed', variant: 'destructive' });
+    } finally {
+      setIsCreatingBackup(false);
+    }
+  };
+
+  const handleRestoreBackup = async (filename: string) => {
+    const confirmed = window.confirm(`Restore backup "${filename}"? This will replace current data.`);
+    if (!confirmed) return;
+
+    setRestoringFile(filename);
+    try {
+      await apiRequest('/api/admin/restore', {
+        method: 'POST',
+        body: JSON.stringify({ filename }),
+      });
+      toast({ title: 'Backup restored' });
+      await loadBackups();
+    } catch {
+      toast({ title: 'Restore failed', variant: 'destructive' });
+    } finally {
+      setRestoringFile(null);
+    }
   };
 
   return (
@@ -282,6 +421,124 @@ export default function SettingsPage() {
             </div>
           </CardContent>
         </Card>
+
+        {syncConflicts.length > 0 && (
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <CardTitle className="flex items-center gap-2">
+                  <AlertTriangle className="h-5 w-5 text-destructive" />
+                  Sync Conflicts
+                </CardTitle>
+                <Button size="sm" variant="outline" onClick={handleRetrySync}>
+                  Retry Sync
+                </Button>
+              </div>
+              <CardDescription>Resolve offline actions rejected by server.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-3">
+                {syncConflicts.map((conflict) => (
+                  <div key={conflict.actionId} className="p-3 rounded-lg border border-destructive/20 bg-destructive/5">
+                    <div className="flex items-center justify-between gap-2">
+                      <div>
+                        <p className="font-medium">{conflict.type}</p>
+                        <p className="text-sm text-muted-foreground">{conflict.code}: {conflict.message}</p>
+                        {(conflict.tableId || conflict.orderId) && (
+                          <p className="text-xs text-muted-foreground">
+                            {conflict.tableId ? `Table: ${conflict.tableId}` : ''}{conflict.tableId && conflict.orderId ? ' • ' : ''}
+                            {conflict.orderId ? `Order: ${conflict.orderId}` : ''}
+                          </p>
+                        )}
+                        {(typeof conflict.serverVersion === 'number' || typeof conflict.localVersion === 'number') && (
+                          <p className="text-xs text-muted-foreground">
+                            Version local/server: {conflict.localVersion ?? '-'} / {conflict.serverVersion ?? '-'}
+                          </p>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1">
+                        {conflict.code === 'LOCKED' && conflict.orderId && canForceUnlock && (
+                          <Button size="sm" variant="outline" onClick={() => handleForceUnlock(conflict.orderId!)}>
+                            Force Unlock
+                          </Button>
+                        )}
+                        <Button size="sm" variant="outline" onClick={() => handleRetryConflict(conflict.actionId)}>
+                          Retry
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => handleDismissConflict(conflict.actionId)}>
+                          Dismiss
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2"><Server className="h-5 w-5" />Server Connection</CardTitle>
+            <CardDescription>Set LAN server URL for this device.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <Input
+              value={serverUrl}
+              onChange={(e) => setServerUrl(e.target.value)}
+              placeholder="http://192.168.1.20:3001"
+              autoCapitalize="none"
+              autoCorrect="off"
+            />
+            <Button onClick={handleSaveServerUrl} disabled={isSavingServer || serverUrl.trim().length === 0}>
+              {isSavingServer ? 'Saving...' : 'Save & Test Connection'}
+            </Button>
+          </CardContent>
+        </Card>
+
+        {isOwner && (
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <CardTitle className="flex items-center gap-2"><Database className="h-5 w-5" />Backups</CardTitle>
+                <Button onClick={handleCreateBackup} disabled={isCreatingBackup} size="sm">
+                  {isCreatingBackup ? 'Creating...' : 'Create Backup Now'}
+                </Button>
+              </div>
+              <CardDescription>Owner-only backup and restore controls.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {isLoadingBackups ? (
+                <p className="text-sm text-muted-foreground">Loading backups...</p>
+              ) : backups.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No backups found.</p>
+              ) : (
+                <div className="space-y-2">
+                  {backups.map((backup) => (
+                    <div key={backup.filename} className="flex items-center justify-between gap-3 p-3 border rounded-lg">
+                      <div className="min-w-0">
+                        <p className="font-medium truncate">{backup.filename}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {(backup.size / 1024 / 1024).toFixed(2)} MB • {new Date(backup.createdAt).toLocaleString()}
+                        </p>
+                      </div>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleRestoreBackup(backup.filename)}
+                        disabled={restoringFile === backup.filename}
+                        className="gap-1.5"
+                      >
+                        <RefreshCcw className="h-4 w-4" />
+                        {restoringFile === backup.filename ? 'Restoring...' : 'Restore'}
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
       </div>
 
       <UserDialog open={userDialogOpen} onOpenChange={setUserDialogOpen} user={editingUser} onSave={handleSaveUser} />

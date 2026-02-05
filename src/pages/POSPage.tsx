@@ -1,10 +1,12 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { ShoppingBag, UtensilsCrossed, ShoppingCart, ChefHat } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { MenuPanel } from '@/components/pos/MenuPanel';
 import { OrderPanel } from '@/components/pos/OrderPanel';
 import { TableSelector } from '@/components/pos/TableSelector';
 import { usePOS } from '@/contexts/POSContext';
+import { useSettings } from '@/contexts/SettingsContext';
+import { useAuth } from '@/contexts/AuthContext';
 import { L } from '@/lib/labels';
 import {
   Dialog,
@@ -17,7 +19,9 @@ import { useBackHandler } from '@/hooks/use-back-handler';
 type MobileView = 'menu' | 'cart';
 
 export default function POSPage() {
-  const { currentOrder, startNewOrder, selectTable } = usePOS();
+  const { currentOrder, startNewOrder, selectTable, tableOrderMap, activeOrders } = usePOS();
+  const { areas, tables } = useSettings();
+  const { user } = useAuth();
   const [showTableSelector, setShowTableSelector] = useState(false);
   const [mobileView, setMobileView] = useState<MobileView>('menu');
   const [orderType, setOrderType] = useState<'dine-in' | 'takeaway'>('takeaway');
@@ -38,6 +42,35 @@ export default function POSPage() {
     selectTable(tableId);
     setShowTableSelector(false);
   };
+
+  const activeDineInTableCount = useMemo(
+    () => activeOrders.filter((order) => order.orderType === 'dine-in' && order.status === 'open').length,
+    [activeOrders]
+  );
+
+  const getTableSummary = (tableId: string) => {
+    const orderId = tableOrderMap.get(tableId);
+    if (!orderId) return null;
+    const order = activeOrders.find((item) => item.id === orderId);
+    if (!order) return null;
+    const itemCount = order.lines.reduce((sum, line) => sum + line.qty, 0);
+    return {
+      orderNumber: order.orderNumber,
+      total: order.grandTotal,
+      itemCount,
+    };
+  };
+
+  const tableSelectorDialog = (
+    <Dialog open={showTableSelector} onOpenChange={setShowTableSelector}>
+      <DialogContent className="max-w-[95vw] sm:max-w-4xl max-h-[85vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>{L.tables}</DialogTitle>
+        </DialogHeader>
+        <TableSelector onTableSelect={handleTableSelect} />
+      </DialogContent>
+    </Dialog>
+  );
 
   const cartItemCount = currentOrder?.lines.reduce((sum, line) => sum + line.qty, 0) || 0;
 
@@ -68,7 +101,7 @@ export default function POSPage() {
         </div>
 
         <div className="flex-1 flex items-center justify-center p-4">
-          <div className="text-center">
+          <div className="text-center space-y-3">
             <Button
               size="lg"
               className="h-16 px-8 text-lg gap-3"
@@ -77,17 +110,15 @@ export default function POSPage() {
               <ShoppingCart className="h-6 w-6" />
               {L.newOrder}
             </Button>
+            {activeDineInTableCount > 0 && (
+              <p className="text-sm text-muted-foreground">
+                {activeDineInTableCount} {L.activeTableOrdersRunning}
+              </p>
+            )}
           </div>
         </div>
 
-        <Dialog open={showTableSelector} onOpenChange={setShowTableSelector}>
-          <DialogContent className="max-w-[95vw] sm:max-w-4xl max-h-[85vh] overflow-y-auto">
-            <DialogHeader>
-              <DialogTitle>{L.tables}</DialogTitle>
-            </DialogHeader>
-            <TableSelector onTableSelect={handleTableSelect} />
-          </DialogContent>
-        </Dialog>
+        {tableSelectorDialog}
       </div>
     );
   }
@@ -96,6 +127,60 @@ export default function POSPage() {
     <div className="h-full flex flex-col md:flex-row">
       {/* Desktop Layout */}
       <div className="hidden md:flex flex-1 h-full">
+        <div className="w-80 border-r border-border bg-card flex flex-col">
+          <div className="p-4 border-b border-border space-y-3">
+            <div>
+              <p className="text-sm text-muted-foreground">{L.loggedInAs}</p>
+              <p className="font-semibold truncate">{user?.name || 'Waiter'}</p>
+            </div>
+            <Button variant="outline" className="w-full" onClick={() => setShowTableSelector(true)}>
+              {L.switchOpenTable}
+            </Button>
+          </div>
+          <div className="flex-1 overflow-y-auto p-4 space-y-4">
+            {areas.map((area) => {
+              const areaTables = tables.filter((table) => table.areaId === area.id && table.isActive);
+              if (areaTables.length === 0) return null;
+
+              return (
+                <div key={area.id} className="space-y-2">
+                  <h3 className="text-xs uppercase tracking-wide text-muted-foreground">{area.name}</h3>
+                  <div className="space-y-2">
+                    {areaTables.map((table) => {
+                      const summary = getTableSummary(table.id);
+                      const isActive = currentOrder.tableId === table.id;
+                      return (
+                        <button
+                          key={table.id}
+                          onClick={() => handleTableSelect(table.id)}
+                          className={`w-full rounded-lg border p-3 text-left transition-colors ${
+                            isActive
+                              ? 'border-primary bg-primary/10'
+                              : summary
+                                ? 'border-warning/30 bg-warning/5 hover:bg-warning/10'
+                                : 'border-border hover:bg-secondary/40'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="font-medium">{table.name}</span>
+                            <span className="text-xs text-muted-foreground">
+                              {summary ? L.occupied : L.available}
+                            </span>
+                          </div>
+                          {summary && (
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              {summary.orderNumber} • {summary.itemCount} items • ₹{summary.total.toFixed(0)}
+                            </p>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
         <div className="flex-1 overflow-hidden">
           <MenuPanel />
         </div>
@@ -122,6 +207,11 @@ export default function POSPage() {
             )}
             <span className="text-muted-foreground">{'\u2022'} {currentOrder.orderNumber}</span>
           </div>
+          {currentOrder.orderType === 'dine-in' && (
+            <Button variant="ghost" size="sm" className="h-8 px-2" onClick={() => setShowTableSelector(true)}>
+              {L.switchTable}
+            </Button>
+          )}
         </div>
 
         <div className="flex-1 overflow-hidden">
@@ -179,6 +269,7 @@ export default function POSPage() {
           <span className="font-semibold">{L.viewCart} &gt;</span>
         </button>
       )}
+      {tableSelectorDialog}
     </div>
   );
 }

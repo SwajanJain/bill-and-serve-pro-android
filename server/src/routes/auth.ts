@@ -50,6 +50,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
         email: user.email,
         role: user.role as JWTPayload['role'],
         name: user.name,
+        deviceId: typeof request.headers['x-device-id'] === 'string' ? request.headers['x-device-id'] : undefined,
       };
 
       const token = fastify.jwt.sign(payload);
@@ -108,6 +109,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
         email: matchedUser.email,
         role: matchedUser.role as JWTPayload['role'],
         name: matchedUser.name,
+        deviceId: typeof request.headers['x-device-id'] === 'string' ? request.headers['x-device-id'] : undefined,
       };
 
       const token = fastify.jwt.sign(payload);

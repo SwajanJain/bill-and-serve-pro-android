@@ -54,6 +54,9 @@ const statements = [
     capacity INTEGER DEFAULT 4,
     is_active INTEGER DEFAULT 1 NOT NULL,
     current_order_id TEXT,
+    lock_owner_device_id TEXT,
+    lock_expires_at INTEGER,
+    version INTEGER DEFAULT 1 NOT NULL,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
   )`,
@@ -89,7 +92,9 @@ const statements = [
     order_number TEXT NOT NULL UNIQUE,
     order_type TEXT NOT NULL,
     table_id TEXT REFERENCES tables(id),
+    owner_user_id TEXT REFERENCES users(id),
     status TEXT DEFAULT 'open' NOT NULL,
+    version INTEGER DEFAULT 1 NOT NULL,
     subtotal REAL DEFAULT 0 NOT NULL,
     discount_type TEXT,
     discount_value REAL,
@@ -99,6 +104,7 @@ const statements = [
     payment_status TEXT DEFAULT 'pending' NOT NULL,
     created_by TEXT NOT NULL REFERENCES users(id),
     created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
     closed_at INTEGER,
     cancelled_at INTEGER,
     cancel_reason TEXT
@@ -115,6 +121,7 @@ const statements = [
     line_total REAL NOT NULL,
     notes TEXT,
     kot_sent INTEGER DEFAULT 0 NOT NULL,
+    version INTEGER DEFAULT 1 NOT NULL,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
   )`,
@@ -215,6 +222,59 @@ const statements = [
     prefix TEXT,
     reset_daily INTEGER DEFAULT 0 NOT NULL,
     last_reset_date TEXT
+  )`,
+
+  // Device sessions table
+  `CREATE TABLE IF NOT EXISTS device_sessions (
+    device_id TEXT PRIMARY KEY NOT NULL,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    app_version TEXT,
+    last_seen_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+  )`,
+
+  // Idempotency keys table
+  `CREATE TABLE IF NOT EXISTS idempotency_keys (
+    key TEXT PRIMARY KEY NOT NULL,
+    endpoint TEXT NOT NULL,
+    actor_user_id TEXT NOT NULL REFERENCES users(id),
+    response_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  )`,
+
+  // Sync actions table
+  `CREATE TABLE IF NOT EXISTS sync_actions (
+    action_id TEXT PRIMARY KEY NOT NULL,
+    device_id TEXT NOT NULL,
+    actor_user_id TEXT NOT NULL REFERENCES users(id),
+    type TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    base_version INTEGER,
+    status TEXT NOT NULL DEFAULT 'pending',
+    result_json TEXT,
+    error_code TEXT,
+    error_message TEXT,
+    created_at INTEGER NOT NULL,
+    processed_at INTEGER
+  )`,
+
+  // Sync cursors table
+  `CREATE TABLE IF NOT EXISTS sync_cursors (
+    device_id TEXT PRIMARY KEY NOT NULL,
+    last_event_seq INTEGER DEFAULT 0 NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`,
+
+  // Domain events table
+  `CREATE TABLE IF NOT EXISTS domain_events (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_type TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    source_device_id TEXT,
+    actor_user_id TEXT REFERENCES users(id),
+    created_at INTEGER NOT NULL
   )`,
 ];
 

@@ -60,7 +60,7 @@ const AppRoutes = () => (
       <Route path="/login" element={<LoginPage />} />
       <Route path="/setup" element={<SetupPage />} />
       <Route path="/" element={<ProtectedRoute><SettingsProvider><POSProvider><AppLayout /></POSProvider></SettingsProvider></ProtectedRoute>}>
-        <Route path="dashboard" element={<DashboardPage />} />
+        <Route path="dashboard" element={<ProtectedRoute permission="reports.view"><DashboardPage /></ProtectedRoute>} />
         <Route path="pos" element={<POSPage />} />
         <Route path="tables" element={<TablesPage />} />
         <Route path="menu" element={<ProtectedRoute permission="menu.manage"><MenuPage /></ProtectedRoute>} />

@@ -18,6 +18,9 @@ export const L = {
   searchMenu: 'Search...',
   viewCart: 'View Cart',
   items: 'items',
+  switchTable: 'Switch',
+  switchOpenTable: 'Switch / Open Table',
+  activeTableOrdersRunning: 'active table orders running',
 
   // Order
   subtotal: 'Subtotal',
@@ -25,6 +28,8 @@ export const L = {
   tax: 'GST',
   total: 'Total',
   orderNumber: 'Order #',
+  sendToKitchen: 'Send to Kitchen',
+  allItemsSent: 'All items already sent',
 
   // Payment
   collectPayment: 'Collect Payment',
@@ -99,6 +104,11 @@ export const L = {
 
   // Toasts (success)
   paymentComplete: 'Payment complete!',
+  sentToKitchen: 'Sent to kitchen',
+  kitchenTicketQueued: 'Kitchen ticket queued (offline)',
+  noNewItemsToSend: 'No new items to send',
+  cannotSendRightNow: 'Cannot send right now',
+  failedToSendKitchen: 'Failed to send to kitchen',
   orderCancelled: 'Order cancelled',
   itemAdded: 'Item added',
   discountApplied: 'Discount applied',
@@ -143,6 +153,7 @@ export const L = {
 
   // Permission
   permissionDenied: 'You don\'t have permission for this page',
+  loggedInAs: 'Logged in as',
 
   // Post-payment
   orderComplete: 'Order complete!',

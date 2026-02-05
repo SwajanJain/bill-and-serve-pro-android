@@ -3,10 +3,7 @@ import { Link, useLocation } from 'react-router-dom';
 import { 
   LayoutDashboard, 
   ShoppingCart, 
-  ChefHat, 
   UtensilsCrossed,
-  Package,
-  FileText,
   Settings,
   LogOut,
   Menu as MenuIcon
@@ -14,16 +11,14 @@ import {
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
 import { cn } from '@/lib/utils';
+import { L } from '@/lib/labels';
 
 const navItems = [
-  { path: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, permission: 'reports.view' },
-  { path: '/pos', label: 'POS', icon: ShoppingCart, permission: 'pos.create' },
-  { path: '/kitchen', label: 'Kitchen', icon: ChefHat, permission: 'kitchen.view' },
-  { path: '/tables', label: 'Tables', icon: UtensilsCrossed, permission: 'tables.view' },
-  { path: '/menu', label: 'Menu', icon: MenuIcon, permission: 'menu.view' },
-  { path: '/inventory', label: 'Inventory', icon: Package, permission: 'inventory.view' },
-  { path: '/reports', label: 'Reports', icon: FileText, permission: 'reports.view' },
-  { path: '/settings', label: 'Settings', icon: Settings, permission: '*' },
+  { path: '/dashboard', label: L.dashboard, icon: LayoutDashboard, permission: 'reports.view' },
+  { path: '/pos', label: L.pos, icon: ShoppingCart, permission: 'pos.create' },
+  { path: '/tables', label: L.tables, icon: UtensilsCrossed, permission: 'tables.view' },
+  { path: '/menu', label: L.menu, icon: MenuIcon, permission: 'menu.manage' },
+  { path: '/settings', label: L.settings, icon: Settings, permission: 'settings.manage' },
 ];
 
 export function Sidebar() {
@@ -77,7 +72,7 @@ export function Sidebar() {
           </div>
           <div className="flex-1 min-w-0">
             <p className="font-medium truncate">{user?.name}</p>
-            <p className="text-xs text-muted-foreground capitalize">{user?.role}</p>
+            <p className="text-xs text-muted-foreground capitalize">{user?.role || ''}</p>
           </div>
         </div>
         <Button 
